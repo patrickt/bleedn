@@ -1,0 +1,11 @@
+[package]
+name = "bleedn"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ordered-float = "4.2"
+
+[build-dependencies]
+bindgen = "0.70"
+cc = "1.0"
