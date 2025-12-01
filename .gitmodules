@@ -1,0 +1,3 @@
+[submodule "vendor/edn.c"]
+	path = vendor/edn.c
+	url = git@github.com:DotFox/edn.c.git
