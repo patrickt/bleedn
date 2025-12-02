@@ -5,6 +5,7 @@
 
 use std::{
     ffi::{c_char, CStr},
+    fmt,
     marker::PhantomData,
     ptr::{null, slice_from_raw_parts, NonNull},
 };
@@ -19,6 +20,7 @@ pub mod kinds {
     pub struct Keyword;
     pub struct List;
     pub struct Map;
+    pub struct Nil;
     // pub struct Ratio;
     pub struct Set;
     pub struct String;
@@ -44,6 +46,11 @@ pub mod kinds {
     impl EdnTag for Keyword {
         fn tag_of() -> edn_type_t {
             EDN_TYPE_KEYWORD
+        }
+    }
+    impl EdnTag for Nil {
+        fn tag_of() -> edn_type_t {
+            EDN_TYPE_NIL
         }
     }
     impl EdnTag for Symbol {
@@ -72,6 +79,12 @@ impl<'a, T> Clone for Edn<'a, T> {
     }
 }
 
+pub struct Bignum<'a> {
+    value: &'a str,
+    negative: bool,
+    radix: Option<u8>,
+}
+
 pub struct NamespacedStr<'a> {
     namespace: Option<&'a str>,
     name: &'a str,
@@ -93,6 +106,13 @@ pub struct ParseOptions {
 }
 
 pub struct Arena(NonNull<edn_arena_t>);
+
+// TODO: backwards iterator?
+struct EdnIterator<'a, T> {
+    value: Edn<'a, T>,
+    index: usize,
+    max: usize,
+}
 
 impl Value {
     pub fn parse(_input: &str) -> Result<Self, EdnError> {
@@ -147,6 +167,21 @@ impl Drop for Value {
 }
 
 impl<'a, T> Edn<'a, T> {
+    fn new(inner: NonNull<edn_value_t>) -> Self {
+        Edn {
+            inner,
+            _phantom: PhantomData,
+        }
+    }
+
+    fn from_raw(val: *mut edn_value_t) -> Option<Edn<'a, T>> {
+        NonNull::new(val).map(Self::new)
+    }
+
+    unsafe fn from_raw_unchecked(val: *mut edn_value_t) -> Self {
+        Self::new(NonNull::new_unchecked(val))
+    }
+
     pub fn cast<U>(&self) -> Option<Edn<'a, U>>
     where
         U: kinds::EdnTag,
@@ -194,12 +229,123 @@ impl<'a, T> Edn<'a, T> {
         unsafe { edn_is_collection(self.as_ptr()) }
     }
 
+    // TODO: why can't this be a TryInto implementation without conflicting
+    // with the Into declaration for Edn<'a, Double>?
+    pub fn as_f64(&self) -> Option<f64> {
+        unsafe {
+            let mut val = 0.0f64;
+            if edn_number_as_double(self.as_ptr(), &raw mut val) {
+                Some(val)
+            } else {
+                None
+            }
+        }
+    }
+
     fn as_ptr(&self) -> *const edn_value_t {
         self.inner.as_ptr()
     }
 }
 
+/// Nil
+
+impl<'a> Edn<'a, kinds::Nil> {}
+
+/// Bool
+
+impl<'a> Into<bool> for Edn<'a, kinds::Bool> {
+    fn into(self) -> bool {
+        unsafe {
+            let mut val = false;
+            let ok = edn_bool_get(self.as_ptr(), &raw mut val);
+            if !ok {
+                panic!("Invariant violated: edn_bool_get failed")
+            }
+            val
+        }
+    }
+}
+
+/// Int64
+
+impl<'a> Into<i64> for Edn<'a, kinds::Int64> {
+    fn into(self) -> i64 {
+        unsafe {
+            let mut val = 0i64;
+            let ok = edn_int64_get(self.as_ptr(), &raw mut val);
+            if !ok {
+                panic!("Invariant violated: edn_int64_get failed")
+            }
+            val
+        }
+    }
+}
+
+/// Bigints
+
+impl<'a> Edn<'a, kinds::BigInt> {
+    pub fn to_bignum(&self) -> Bignum<'a> {
+        unsafe {
+            let mut length = 0usize;
+            let mut negative = false;
+            let mut radix = 0u8;
+            let val_ptr = edn_bigint_get(
+                self.as_ptr(),
+                &raw mut length,
+                &raw mut negative,
+                &raw mut radix,
+            ) as *const u8;
+            if val_ptr.is_null() {
+                panic!("Invariant violated: edn_bigint_getfailed")
+            }
+            let slice = std::slice::from_raw_parts(val_ptr, length);
+            Bignum {
+                value: str::from_utf8_unchecked(slice),
+                negative,
+                radix: Some(radix),
+            }
+        }
+    }
+}
+
+/// Doubles
+
+impl<'a> Into<f64> for Edn<'a, kinds::Double> {
+    fn into(self) -> f64 {
+        unsafe {
+            let mut val = 0f64;
+            let ok = edn_double_get(self.as_ptr(), &raw mut val);
+            if !ok {
+                panic!("Invariant violated: edn_double_get failed")
+            }
+            val
+        }
+    }
+}
+
+/// TODO: Ratio
+
+/// Characters
+impl<'a> Into<char> for Edn<'a, kinds::Char> {
+    fn into(self) -> char {
+        unsafe {
+            let mut val = 0u32;
+            let ok = edn_character_get(self.as_ptr(), &raw mut val);
+            if !ok {
+                panic!("Invariant violated: edn_character_get failed")
+            }
+            char::from_u32_unchecked(val)
+        }
+    }
+}
+
+/// Strings
+
 impl<'a> Edn<'a, kinds::String> {
+    pub fn equals(&self, val: &CStr) -> bool {
+        unsafe { edn_string_equals(self.as_ptr(), val.as_ptr()) }
+    }
+
     pub fn as_c_str(&self) -> &'a CStr {
         unsafe {
             let mut len = 0usize;
@@ -235,6 +381,8 @@ impl<'a> Into<&'a str> for Edn<'a, kinds::String> {
     }
 }
 
+/// Keywords
+
 impl<'a> Edn<'a, kinds::Keyword> {
     fn as_namespaced_str(&self) -> NamespacedStr<'a> {
         unsafe {
@@ -257,6 +405,18 @@ impl<'a> Edn<'a, kinds::Keyword> {
     }
 }
 
+impl fmt::Display for Edn<'_, kinds::Keyword> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ns = self.as_namespaced_str();
+        match ns.namespace {
+            None => write!(f, ":{}", ns.name),
+            Some(space) => write!(f, ":{}/{}", space, ns.name),
+        }
+    }
+}
+
+/// Sets
+
 impl<'a> Edn<'a, kinds::Set> {
     fn len(&self) -> usize {
         unsafe { edn_set_count(self.as_ptr()) }
@@ -275,30 +435,43 @@ impl<'a> Edn<'a, kinds::Set> {
     }
 }
 
-struct EdnIterator<'a, T> {
-    value: Edn<'a, T>,
-    index: usize,
-    max: usize,
-}
-
 impl<'a> Iterator for EdnIterator<'a, kinds::Set> {
     type Item = Edn<'a, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index > self.max {
-            None
-        } else {
-            unsafe {
-                let next = edn_set_get(self.value.as_ptr(), self.index);
-                self.index += 1;
-                Some(Edn {
-                    inner: NonNull::new_unchecked(next),
-                    _phantom: PhantomData,
-                })
-            }
+        let val = Edn::from_raw(unsafe { edn_set_get(self.value.as_ptr(), self.index) });
+        if val.is_some() {
+            self.index += 1;
         }
+        val
     }
 }
+
+/// Vectors
+
+impl<'a> Edn<'a, kinds::Vector> {
+    pub fn len(&self) -> usize {
+        unsafe { edn_vector_count(self.as_ptr()) }
+    }
+
+    pub fn get(&self, idx: usize) -> Option<Edn<'a, ()>> {
+        Edn::from_raw(unsafe { edn_vector_get(self.as_ptr(), idx) })
+    }
+}
+
+impl<'a> Iterator for EdnIterator<'a, kinds::Vector> {
+    type Item = Edn<'a, ()>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let val = Edn::from_raw(unsafe { edn_vector_get(self.value.as_ptr(), self.index) });
+        if val.is_some() {
+            self.index += 1;
+        }
+        val
+    }
+}
+
+/// Symbols
 
 impl<'a> Edn<'a, kinds::Symbol> {
     fn as_namespaced_str(&self) -> NamespacedStr<'a> {
