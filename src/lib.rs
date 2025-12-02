@@ -1,6 +1,7 @@
 #![allow(non_upper_case_globals)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
+#![allow(dead_code)]
 
 use std::{
     ffi::{c_char, CStr},
@@ -23,102 +24,183 @@ pub mod kinds {
     pub struct String;
     pub struct Symbol;
     pub struct Vector;
+
+    pub trait EdnTag {
+        fn tag_of() -> edn_type_t;
+    }
+
+    use crate::edn_type_t;
+    use crate::edn_type_t::*;
+    impl EdnTag for String {
+        fn tag_of() -> edn_type_t {
+            EDN_TYPE_STRING
+        }
+    }
+    impl EdnTag for Set {
+        fn tag_of() -> edn_type_t {
+            EDN_TYPE_SET
+        }
+    }
+    impl EdnTag for Keyword {
+        fn tag_of() -> edn_type_t {
+            EDN_TYPE_KEYWORD
+        }
+    }
+    impl EdnTag for Symbol {
+        fn tag_of() -> edn_type_t {
+            EDN_TYPE_SYMBOL
+        }
+    }
 }
 
 // Include the generated bindings
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-pub struct Value(Edn<()>);
+pub struct Value(NonNull<edn_value_t>);
+
+pub struct Edn<'a, T> {
+    inner: NonNull<edn_value_t>,
+    _phantom: PhantomData<&'a T>,
+}
+
+impl<'a, T> Clone for Edn<'a, T> {
+    fn clone(&self) -> Self {
+        Edn {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+pub struct NamespacedStr<'a> {
+    namespace: Option<&'a str>,
+    name: &'a str,
+}
+
+pub struct ReaderRegistry(NonNull<edn_reader_registry_t>);
+
+#[derive(Clone)]
+pub enum DefaultReaderMode {
+    Passthrough,
+    Unwrap,
+    Error,
+}
+
+pub struct ParseOptions {
+    registry: ReaderRegistry,
+    eof_value: Value,
+    default_reader_mode: DefaultReaderMode,
+}
+
+pub struct Arena(NonNull<edn_arena_t>);
 
 impl Value {
     pub fn parse(_input: &str) -> Result<Self, EdnError> {
         todo!()
     }
 
-    pub fn edn_string<'a>(&'a self) -> Option<&'a Edn<kinds::String>> {
+    pub fn parse_with_options(_input: &str, _options: &ParseOptions) -> Result<Self, EdnError> {
         todo!()
     }
 
-    pub fn edn_vector<'a>(&'a self) -> Option<&'a Edn<kinds::Vector>> {
-        todo!()
+    pub fn into_edn<'a, U>(&'a self) -> Option<Edn<'a, U>>
+    where
+        U: kinds::EdnTag,
+    {
+        unsafe {
+            if edn_type(self.as_ptr()) == U::tag_of() {
+                Some(Edn {
+                    inner: self.0,
+                    _phantom: PhantomData,
+                })
+            } else {
+                None
+            }
+        }
     }
 
-    pub fn edn_double<'a>(&'a self) -> Option<&'a Edn<kinds::Double>> {
-        todo!()
+    pub fn edn_string<'a>(&'a self) -> Option<Edn<'a, kinds::String>> {
+        self.into_edn()
     }
 
-    pub fn edn_bool<'a>(&'a self) -> Option<&'a Edn<kinds::Bool>> {
-        todo!()
+    pub fn edn_keyword<'a>(&'a self) -> Option<Edn<'a, kinds::Symbol>> {
+        self.into_edn()
     }
 
-    pub fn is_nil(&self) -> bool {
-        self.0.is_nil()
+    pub fn edn_set<'a>(&'a self) -> Option<Edn<'a, kinds::Set>> {
+        self.into_edn()
     }
 
-    pub fn is_string(&self) -> bool {
-        self.0.is_string()
+    pub fn edn_symbol<'a>(&'a self) -> Option<Edn<'a, kinds::Keyword>> {
+        self.into_edn()
+    }
+
+    fn as_ptr(&self) -> *const edn_value_t {
+        self.0.as_ptr()
     }
 }
 
 impl Drop for Value {
     fn drop(&mut self) {
-        unsafe { edn_free(self.0.inner.as_ptr()) }
+        unsafe { edn_free(self.0.as_ptr()) }
     }
 }
 
-// todo: I think this has to be Edn<'a, T>
-pub struct Edn<T> {
-    inner: NonNull<edn_value_t>,
-    _phantom: PhantomData<T>,
-}
+impl<'a, T> Edn<'a, T> {
+    pub fn cast<U>(&self) -> Option<Edn<'a, U>>
+    where
+        U: kinds::EdnTag,
+    {
+        unsafe {
+            if self.has_tag::<U>() {
+                Some(self.cast_unchecked())
+            } else {
+                None
+            }
+        }
+    }
 
-impl<T> Edn<T> {
-    pub unsafe fn downcast_unchecked<U>(&self) -> Edn<U> {
+    pub unsafe fn cast_unchecked<U>(&self) -> Edn<'a, U> {
         Edn {
             inner: self.inner,
             _phantom: PhantomData,
         }
     }
 
+    pub fn has_tag<U>(&self) -> bool
+    where
+        U: kinds::EdnTag,
+    {
+        unsafe { edn_type(self.as_ptr()) == U::tag_of() }
+    }
+
     pub fn is_nil(&self) -> bool {
-        todo!()
+        unsafe { edn_is_nil(self.as_ptr()) }
     }
 
     pub fn is_string(&self) -> bool {
-        todo!()
+        unsafe { edn_is_string(self.as_ptr()) }
     }
 
     pub fn is_number(&self) -> bool {
-        todo!()
+        unsafe { edn_is_number(self.as_ptr()) }
     }
 
     pub fn is_integer(&self) -> bool {
-        todo!()
+        unsafe { edn_is_integer(self.as_ptr()) }
     }
 
     pub fn is_collection(&self) -> bool {
-        todo!()
+        unsafe { edn_is_collection(self.as_ptr()) }
     }
 
-    pub fn as_f64(&self) -> Option<f64> {
-        unsafe {
-            let mut value = 0f64;
-            let ok = edn_number_as_double(self.inner.as_ptr(), &value);
-            if ok {
-                Some(value)
-            } else {
-                None
-            }
-        }
+    fn as_ptr(&self) -> *const edn_value_t {
+        self.inner.as_ptr()
     }
 }
 
-impl Edn<kinds::String> {
-    pub fn compare(&self, val: &str) -> Ordering {
-        todo!()
-    }
-
-    pub fn as_c_str<'a>(&'a self) -> &'a CStr {
+impl<'a> Edn<'a, kinds::String> {
+    pub fn as_c_str(&self) -> &'a CStr {
         unsafe {
             let mut len = 0usize;
             let c_ptr = edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
@@ -130,106 +212,136 @@ impl Edn<kinds::String> {
         }
     }
 
-    pub fn as_str<'a>(&'a self) -> &'a str {
+    pub fn as_str(&'a self) -> &'a str {
         self.as_c_str()
             .to_str()
             .expect("Invariant violated: bad UTF-8 in Edn<String>")
     }
 }
 
-impl Edn<kinds::Vector> {
-    pub fn get<'a>(&'a self, _idx: usize) -> Option<&'a Edn<()>> {
-        todo!()
-    }
-}
-
-impl Into<f64> for Edn<kinds::Double> {
-    fn into(self) -> f64 {
-        unsafe {
-            let mut val = 0f64;
-            let ok = edn_double_get(self.inner.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: bad f64 in Edn<Double>")
-            }
-            val
-        }
-    }
-}
-
-impl Into<i64> for Edn<kinds::Int64> {
-    fn into(self) -> i64 {
-        unsafe {
-            let mut val = 0i64;
-            let ok = edn_int64_get(self.inner.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: bad f64 in Edn<Double>")
-            }
-            val
-        }
-    }
-}
-
-impl Edn<kinds::BigInt> {
-    pub fn digit_string<'a>(&'a self) -> &'a str {
+impl<'a> Into<&'a str> for Edn<'a, kinds::String> {
+    fn into(self) -> &'a str {
         unsafe {
             let mut len = 0usize;
-            let c_ptr = edn_bigint_get(self.inner.as_ptr(), &raw mut len, null, null) as *const u8;
+            let c_ptr = edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
             let slice = std::slice::from_raw_parts(c_ptr, len);
             CStr::from_bytes_with_nul_unchecked(slice)
+                .to_str()
+                .expect("Invariant violated: bad UTF-8 in Edn<String>")
         }
     }
 }
 
-impl Edn<kinds::BigInt> {
-    pub fn decimal_string<'a>(&'a self) -> &'a str {
+impl<'a> Edn<'a, kinds::Keyword> {
+    fn as_namespaced_str(&self) -> NamespacedStr<'a> {
         unsafe {
-            let mut len = 0usize;
-            let c_ptr = edn_bigdec_get(self.inner.as_ptr(), &raw mut len, null) as *const u8;
-            if c_ptr.is_null() {
-                panic!("Invariant violated: NULL string inside an Edn<String>")
-            }
-            let slice = std::slice::from_raw_parts(c_ptr, len);
-            CStr::from_bytes_with_nul_unchecked(slice)
-        }
-    }
-}
-
-pub struct NamespacedStr<'a> {
-    namespace: Option<&'a str>,
-    name: &'a str,
-}
-
-impl Edn<kinds::Keyword> {
-    fn keyword<'a>(&'a self) -> NamespacedStr<'a> {
-        unsafe {
-            let mut namespace_ptr: *const c_char = null();
-            let mut name_ptr: *const c_char = null();
-            let mut namespace_len = 0usize;
-            let mut name_len = 0usize;
+            let mut namespace_ptr: *const c_char = std::ptr::null();
+            let mut namespace_size = 0usize;
+            let mut name_ptr: *const c_char = std::ptr::null();
+            let mut name_size = 0usize;
             let ok = edn_keyword_get(
-                self.inner.as_ptr(),
+                self.as_ptr(),
                 &raw mut namespace_ptr,
-                &raw mut namespace_len,
+                &raw mut namespace_size,
                 &raw mut name_ptr,
-                &raw mut name_len,
+                &raw mut name_size,
             );
             if !ok {
-                panic!("Invariant violated: bad keyword data in Edn<Keyword>")
+                panic!("Invariant violated: bad keyword in Edn<Keyword>")
             }
-            let mut namespace: Option<&str> = None;
+            NamespacedStr::from_raw(namespace_ptr, namespace_size, name_ptr, name_size)
+        }
+    }
+}
+
+impl<'a> Edn<'a, kinds::Set> {
+    fn len(&self) -> usize {
+        unsafe { edn_set_count(self.as_ptr()) }
+    }
+
+    fn contains<U>(&self, val: Edn<'a, U>) -> bool {
+        unsafe { edn_set_contains(self.as_ptr(), val.as_ptr()) }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
+        EdnIterator {
+            value: self.clone(),
+            index: 0,
+            max: self.len(),
+        }
+    }
+}
+
+struct EdnIterator<'a, T> {
+    value: Edn<'a, T>,
+    index: usize,
+    max: usize,
+}
+
+impl<'a> Iterator for EdnIterator<'a, kinds::Set> {
+    type Item = Edn<'a, ()>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index > self.max {
+            None
+        } else {
+            unsafe {
+                let next = edn_set_get(self.value.as_ptr(), self.index);
+                self.index += 1;
+                Some(Edn {
+                    inner: NonNull::new_unchecked(next),
+                    _phantom: PhantomData,
+                })
+            }
+        }
+    }
+}
+
+impl<'a> Edn<'a, kinds::Symbol> {
+    fn as_namespaced_str(&self) -> NamespacedStr<'a> {
+        unsafe {
+            let mut namespace_ptr: *const c_char = std::ptr::null();
+            let mut namespace_size = 0usize;
+            let mut name_ptr: *const c_char = std::ptr::null();
+            let mut name_size = 0usize;
+            let ok = edn_symbol_get(
+                self.as_ptr(),
+                &raw mut namespace_ptr,
+                &raw mut namespace_size,
+                &raw mut name_ptr,
+                &raw mut name_size,
+            );
+            if !ok {
+                panic!("Invariant violated: bad keyword in Edn<Keyword>")
+            }
+            NamespacedStr::from_raw(namespace_ptr, namespace_size, name_ptr, name_size)
+        }
+    }
+}
+
+impl<'a> NamespacedStr<'a> {
+    fn from_raw(
+        namespace_ptr: *const c_char,
+        namespace_len: usize,
+        name_ptr: *const c_char,
+        name_len: usize,
+    ) -> Self {
+        unsafe {
+            let mut namespace: Option<&'a str> = None;
             if !namespace_ptr.is_null() {
-                let slice = std::slice::from_raw_parts(namespace_ptr as *const u8, namespace_len);
-                ns_str = Some(
-                    CStr::from_bytes_with_nul_unchecked(slice)
+                let namespace_slice =
+                    std::slice::from_raw_parts(namespace_ptr as *const u8, namespace_len);
+                namespace = Some(
+                    CStr::from_bytes_with_nul_unchecked(namespace_slice)
                         .to_str()
                         .expect("Invariant violated: bad UTF-8"),
                 );
             }
-            let slice = std::slice::from_raw_parts(name_ptr as *const u8, name_len);
-            let name = CStr::from_bytes_with_nul_unchecked(slice)
+            let name_slice = std::slice::from_raw_parts(name_ptr as *const u8, name_len);
+            let name = CStr::from_bytes_with_nul_unchecked(name_slice)
                 .to_str()
                 .expect("Invariant violated: bad UTF-8");
             NamespacedStr { namespace, name }
@@ -237,65 +349,49 @@ impl Edn<kinds::Keyword> {
     }
 }
 
-impl Edn<kinds::Map> {
-    pub fn len(&self) -> usize {
-        todo!()
-    }
-
-    pub fn contains_key<U>(&self, _val: Edn<U>) -> bool {
-        todo!()
-    }
-
-    pub fn lookup<U>(&'a self, _key: Edn<U>) -> Option<>
-}
-
-impl Edn<kinds::Set> {
-    pub fn len(&self) -> usize {
-        todo!()
-    }
-
-    pub fn contains<U>(&self, item: Edn<U>) -> bool {
-        todo!()
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = Edn<()>> {
-        todo!()
+impl Into<edn_default_reader_mode_t> for DefaultReaderMode {
+    fn into(self) -> edn_default_reader_mode_t {
+        use edn_default_reader_mode_t::*;
+        match self {
+            DefaultReaderMode::Passthrough => EDN_DEFAULT_READER_PASSTHROUGH,
+            DefaultReaderMode::Unwrap => EDN_DEFAULT_READER_UNWRAP,
+            DefaultReaderMode::Error => EDN_DEFAULT_READER_ERROR,
+        }
     }
 }
 
-impl Edn<kinds::Symbol> {
-    pub fn symbol<'a>(&'a self) -> NamespacedStr<'a> {
-        todo!()
-    }
-}
-
-// impl Into<(i64, i64)> for Edn<kinds::Ratio> {
-//     fn into(self) -> (i64, i64) {
-//         unsafe {
-//             let mut numerator = 0i64;
-//             let mut denominator = 0i64;
-//             let ok = edn_ratio_get(
-//                 self.inner.as_ptr(),
-//                 &raw mut numerator,
-//                 &raw mut denominator,
-//             );
-//             if !ok {
-//                 panic!("Invariant violated: bad ratio value in Edn<Ratio>")
-//             }
-//             (numerator, denominator)
-//         }
-//     }
-// }
-
-impl Into<char> for Edn<kinds::Char> {
-    fn into(self) -> char {
+// TODO: how do we ensure that reader registries live long enough
+impl ReaderRegistry {
+    pub fn new() -> Self {
         unsafe {
-            let mut val = 0u32;
-            let ok = edn_character_get(self.inner.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: bad char value in Edn<Char>")
+            let registry = edn_reader_registry_create();
+            if registry.is_null() {
+                panic!("Out of memory in ReaderRegistry::new")
             }
-            char::from_u32_unchecked(val)
+            ReaderRegistry(NonNull::new_unchecked(registry))
+        }
+    }
+
+    pub fn register<'a, F>(&self, _tag: &str, _reader: F)
+    where
+        F: Fn(Value, &'a Arena, &'a str) -> (),
+    {
+        todo!()
+    }
+}
+
+impl Drop for ReaderRegistry {
+    fn drop(&mut self) {
+        unsafe { edn_reader_registry_destroy(self.0.as_ptr()) }
+    }
+}
+
+impl ParseOptions {
+    fn as_raw(&self) -> edn_parse_options_t {
+        edn_parse_options_t {
+            reader_registry: self.registry.0.as_ptr(),
+            eof_value: self.eof_value.0.as_ptr(),
+            default_reader_mode: self.default_reader_mode.clone().into(),
         }
     }
 }
