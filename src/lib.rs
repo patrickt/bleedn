@@ -28,26 +28,26 @@ pub mod kinds {
     }
 
     impl_edn_tag! {
-        Nil     => EDN_TYPE_NIL,
-        Bool    => EDN_TYPE_BOOL,
-        Int64   => EDN_TYPE_INT,
-        BigInt  => EDN_TYPE_BIGINT,
-        Double  => EDN_TYPE_FLOAT,
         BigDec  => EDN_TYPE_BIGDEC,
-        Ratio   => EDN_TYPE_RATIO,
+        BigInt  => EDN_TYPE_BIGINT,
+        Bool    => EDN_TYPE_BOOL,
         Char    => EDN_TYPE_CHARACTER,
-        String  => EDN_TYPE_STRING,
-        Symbol  => EDN_TYPE_SYMBOL,
+        Float   => EDN_TYPE_FLOAT,
+        Int64   => EDN_TYPE_INT,
         Keyword => EDN_TYPE_KEYWORD,
         List    => EDN_TYPE_LIST,
-        Vector  => EDN_TYPE_VECTOR,
         Map     => EDN_TYPE_MAP,
+        Nil     => EDN_TYPE_NIL,
+        Ratio   => EDN_TYPE_RATIO,
         Set     => EDN_TYPE_SET,
+        String  => EDN_TYPE_STRING,
+        Symbol  => EDN_TYPE_SYMBOL,
         Tagged  => EDN_TYPE_TAGGED,
+        Vector  => EDN_TYPE_VECTOR,
     }
 }
 
-// Include the generated bindings
+/// Generated C bindings for the edn.c library.
 pub mod c {
     #![allow(non_upper_case_globals)]
     #![allow(non_camel_case_types)]
@@ -55,24 +55,18 @@ pub mod c {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+/// A reference to an EDN entity within a document.
+/// This is a wrapper around a pointer, so it is cheap to clone.
 #[derive(Debug)]
 pub struct Edn<'a, T = ()> {
     inner: NonNull<c::edn_value_t>,
     _phantom: PhantomData<&'a T>,
 }
 
+/// An EDN document. Use its AsRef implementation to get an `Edn` node.
 #[repr(transparent)]
 #[derive(Debug)]
 pub struct Doc(Edn<'static, ()>);
-
-impl<'a, T> Clone for Edn<'a, T> {
-    fn clone(&self) -> Self {
-        Edn {
-            inner: self.inner.clone(),
-            _phantom: PhantomData,
-        }
-    }
-}
 
 pub struct Bignum<'a> {
     pub value: &'a str,
@@ -205,36 +199,45 @@ impl<'a, T> Edn<'a, T> {
         unsafe { c::edn_type(self.as_ptr()) == U::tag_of() }
     }
 
+    /// Is this node nil?
     pub fn is_nil(&self) -> bool {
         unsafe { c::edn_is_nil(self.as_ptr()) }
     }
 
+    /// Is this node a string?
     pub fn is_string(&self) -> bool {
         unsafe { c::edn_is_string(self.as_ptr()) }
     }
 
+    /// Is this node a number (int64, bignum, bigdec, or ratio)?
     pub fn is_number(&self) -> bool {
         unsafe { c::edn_is_number(self.as_ptr()) }
     }
 
+    /// Is this node an int64?
     pub fn is_integer(&self) -> bool {
         unsafe { c::edn_is_integer(self.as_ptr()) }
     }
 
+    /// Is this node a collection (list, map, vector, or set)?
     pub fn is_collection(&self) -> bool {
         unsafe { c::edn_is_collection(self.as_ptr()) }
     }
 
+    /// Return the metadata associated with this node, or None.
     pub fn metadata(&self) -> Option<Edn<'a, kinds::Map>> {
         Edn::from_raw(unsafe { c::edn_value_meta(self.as_ptr()) })
     }
 
+    /// Returns true if the node has metadata. Equivalent to `self.metadata.is_some()`, but
+    /// concievably faster.
     pub fn has_metadata(&self) -> bool {
         unsafe { c::edn_value_has_meta(self.as_ptr()) }
     }
 
     // TODO: why can't this be a TryInto implementation without conflicting
     // with the Into declaration for Edn<'a, Double>?
+    /// Convert a numeric type (int64, bignum, float, or ratio)
     pub fn as_f64(&self) -> Option<f64> {
         unsafe {
             let mut val = 0.0f64;
@@ -248,6 +251,15 @@ impl<'a, T> Edn<'a, T> {
 
     fn as_ptr(&self) -> *const c::edn_value_t {
         self.inner.as_ptr()
+    }
+}
+
+impl<'a, T> Clone for Edn<'a, T> {
+    fn clone(&self) -> Self {
+        Edn {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -334,9 +346,9 @@ impl<'a> Edn<'a, kinds::BigDec> {
     }
 }
 
-/// Doubles
+/// Floats
 
-impl<'a> Into<f64> for Edn<'a, kinds::Double> {
+impl<'a> Into<f64> for Edn<'a, kinds::Float> {
     fn into(self) -> f64 {
         unsafe {
             let mut val = 0f64;
