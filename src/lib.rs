@@ -103,23 +103,6 @@ pub struct NamespacedStr<'a> {
     name: &'a str,
 }
 
-pub struct ReaderRegistry(NonNull<c::edn_reader_registry_t>);
-
-#[derive(Clone)]
-pub enum DefaultReaderMode {
-    Passthrough,
-    Unwrap,
-    Error,
-}
-
-pub struct ParseOptions {
-    registry: ReaderRegistry,
-    eof_value: Doc,
-    default_reader_mode: DefaultReaderMode,
-}
-
-pub struct Arena(NonNull<c::edn_arena_t>);
-
 struct EdnIterator<'a, T> {
     value: Edn<'a, T>,
     index: usize,
@@ -133,8 +116,7 @@ impl Doc {
     ///
     /// # Example
     /// ```
-    /// # use bleedn::Root;
-    /// let root = Root::parse("[1 2 3]").unwrap();
+    /// let root = bleedn::Doc::parse("[1 2 3]").unwrap();
     /// ```
     pub fn parse(input: impl AsRef<str>) -> Result<Self, ParseError> {
         let c_string = CString::new(input.as_ref()).map_err(|_| ParseError {
@@ -169,32 +151,6 @@ impl Doc {
             }
         }
     }
-
-    pub fn parse_cstr_with_options(
-        input: &CStr,
-        options: &ParseOptions,
-    ) -> Result<Self, ParseError> {
-        unsafe {
-            let mut c_options = options.as_raw();
-            let c_result =
-                c::edn_read_with_options(input.as_ptr(), input.count_bytes(), &raw mut c_options);
-            if c_result.error == c::edn_error_t::EDN_OK {
-                Ok(Doc(Edn {
-                    inner: NonNull::new_unchecked(c_result.value),
-                    _phantom: PhantomData,
-                }))
-            } else {
-                Err(ParseError {
-                    kind: c_result.error.into(),
-                    line: c_result.error_line,
-                    column: c_result.error_column,
-                    message: CStr::from_ptr(c_result.error_message)
-                        .to_string_lossy()
-                        .into_owned(),
-                })
-            }
-        }
-    }
 }
 
 impl Drop for Doc {
@@ -207,7 +163,7 @@ impl Deref for Doc {
     type Target = Edn<'static, ()>;
 
     fn deref(&self) -> &Self::Target {
-        // Safety: Root is repr(transparent) over Edn<'static, ()>
+        // Safety: Doc is repr(transparent) over Edn<'static, ()>
         &self.0
     }
 }
@@ -740,53 +696,6 @@ impl<'a> NamespacedStr<'a> {
     }
 }
 
-impl Into<c::edn_default_reader_mode_t> for DefaultReaderMode {
-    fn into(self) -> c::edn_default_reader_mode_t {
-        use c::edn_default_reader_mode_t::*;
-        match self {
-            DefaultReaderMode::Passthrough => EDN_DEFAULT_READER_PASSTHROUGH,
-            DefaultReaderMode::Unwrap => EDN_DEFAULT_READER_UNWRAP,
-            DefaultReaderMode::Error => EDN_DEFAULT_READER_ERROR,
-        }
-    }
-}
-
-// TODO: how do we ensure that reader registries live long enough
-impl ReaderRegistry {
-    pub fn new() -> Self {
-        unsafe {
-            let registry = c::edn_reader_registry_create();
-            if registry.is_null() {
-                panic!("Out of memory in ReaderRegistry::new")
-            }
-            ReaderRegistry(NonNull::new_unchecked(registry))
-        }
-    }
-
-    pub fn register<'a, F>(&self, _tag: &str, _reader: F)
-    where
-        F: Fn(Doc, &'a Arena, &'a str) -> (),
-    {
-        todo!()
-    }
-}
-
-impl Drop for ReaderRegistry {
-    fn drop(&mut self) {
-        unsafe { c::edn_reader_registry_destroy(self.0.as_ptr()) }
-    }
-}
-
-impl ParseOptions {
-    fn as_raw(&self) -> c::edn_parse_options_t {
-        c::edn_parse_options_t {
-            reader_registry: self.registry.0.as_ptr(),
-            eof_value: self.eof_value.0.inner.as_ptr(),
-            default_reader_mode: self.default_reader_mode.clone().into(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EdnError {
     InvalidSyntax,
@@ -995,7 +904,7 @@ mod tests {
         let input = CString::new(r#""test""#).unwrap();
         let root = Doc::parse_cstr(&input).unwrap();
 
-        // Should be able to call Edn methods directly on Root via Deref
+        // Should be able to call Edn methods directly on Doc via Deref
         assert!(root.is_string());
         let str_val = root.cast::<kinds::String>().unwrap();
         assert_eq!(str_val.as_str(), "test");
