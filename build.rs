@@ -20,7 +20,9 @@ fn main() {
         .flag("-Wall")
         .flag("-Wextra")
         .flag("-Wpedantic")
-        .opt_level(2);
+        .opt_level(2)
+        .define("EDN_ENABLE_METADATA", None)
+        .define("EDN_ENABLE_RATIO", None);
 
     // Add platform-specific flags
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
@@ -66,6 +68,8 @@ fn main() {
         .header("wrapper.h")
         .clang_arg(format!("-I{}", include_dir.display()))
         .clang_arg(format!("-I{}", src_dir.display()))
+        .clang_arg("-DEDN_ENABLE_METADATA")
+        .clang_arg("-DEDN_ENABLE_RATIO")
         .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         // Only generate bindings for edn.h functions
         .allowlist_function("edn_.*")

@@ -7,7 +7,7 @@ use std::{
     ffi::{c_char, CStr, CString},
     fmt,
     marker::PhantomData,
-    ptr::{null, null_mut, slice_from_raw_parts, NonNull},
+    ptr::{null, null_mut, NonNull},
 };
 
 pub mod kinds {
@@ -21,7 +21,7 @@ pub mod kinds {
     pub struct List;
     pub struct Map;
     pub struct Nil;
-    // pub struct Ratio;
+    pub struct Ratio;
     pub struct Set;
     pub struct String;
     pub struct Symbol;
@@ -32,52 +32,49 @@ pub mod kinds {
         fn tag_of() -> edn_type_t;
     }
 
-    use crate::edn_type_t;
-    use crate::edn_type_t::*;
-    impl EdnTag for String {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_STRING
-        }
+    use crate::c::edn_type_t;
+
+    macro_rules! impl_edn_tag {
+        ($($kind:ident => $tag:ident),* $(,)?) => {
+            $(
+                impl EdnTag for $kind {
+                    fn tag_of() -> edn_type_t {
+                        edn_type_t::$tag
+                    }
+                }
+            )*
+        };
     }
-    impl EdnTag for Set {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_SET
-        }
-    }
-    impl EdnTag for Keyword {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_KEYWORD
-        }
-    }
-    impl EdnTag for Nil {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_NIL
-        }
-    }
-    impl EdnTag for Symbol {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_SYMBOL
-        }
-    }
-    impl EdnTag for List {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_LIST
-        }
-    }
-    impl EdnTag for Vector {
-        fn tag_of() -> edn_type_t {
-            EDN_TYPE_VECTOR
-        }
+
+    impl_edn_tag! {
+        Nil     => EDN_TYPE_NIL,
+        Bool    => EDN_TYPE_BOOL,
+        Int64   => EDN_TYPE_INT,
+        BigInt  => EDN_TYPE_BIGINT,
+        Double  => EDN_TYPE_FLOAT,
+        BigDec  => EDN_TYPE_BIGDEC,
+        Ratio   => EDN_TYPE_RATIO,
+        Char    => EDN_TYPE_CHARACTER,
+        String  => EDN_TYPE_STRING,
+        Symbol  => EDN_TYPE_SYMBOL,
+        Keyword => EDN_TYPE_KEYWORD,
+        List    => EDN_TYPE_LIST,
+        Vector  => EDN_TYPE_VECTOR,
+        Map     => EDN_TYPE_MAP,
+        Set     => EDN_TYPE_SET,
+        Tagged  => EDN_TYPE_TAGGED,
     }
 }
 
 // Include the generated bindings
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+pub mod c {
+    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+}
 
-pub struct Root(NonNull<edn_value_t>);
+pub struct Root(NonNull<c::edn_value_t>);
 
 pub struct Edn<'a, T> {
-    inner: NonNull<edn_value_t>,
+    inner: NonNull<c::edn_value_t>,
     _phantom: PhantomData<&'a T>,
 }
 
@@ -101,7 +98,7 @@ pub struct NamespacedStr<'a> {
     name: &'a str,
 }
 
-pub struct ReaderRegistry(NonNull<edn_reader_registry_t>);
+pub struct ReaderRegistry(NonNull<c::edn_reader_registry_t>);
 
 #[derive(Clone)]
 pub enum DefaultReaderMode {
@@ -116,7 +113,7 @@ pub struct ParseOptions {
     default_reader_mode: DefaultReaderMode,
 }
 
-pub struct Arena(NonNull<edn_arena_t>);
+pub struct Arena(NonNull<c::edn_arena_t>);
 
 // TODO: backwards iterator?
 struct EdnIterator<'a, T> {
@@ -128,8 +125,8 @@ struct EdnIterator<'a, T> {
 impl Root {
     pub fn parse_cstr(input: &CStr) -> Result<Self, EdnError> {
         unsafe {
-            let c_result = edn_read(input.as_ptr(), input.count_bytes());
-            if c_result.error == edn_error_t::EDN_OK {
+            let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
+            if c_result.error == c::edn_error_t::EDN_OK {
                 Ok(Root(NonNull::new_unchecked(c_result.value)))
             } else {
                 Err(EdnError {
@@ -148,8 +145,8 @@ impl Root {
         unsafe {
             let mut c_options = options.as_raw();
             let c_result =
-                edn_read_with_options(input.as_ptr(), input.count_bytes(), &raw mut c_options);
-            if c_result.error == edn_error_t::EDN_OK {
+                c::edn_read_with_options(input.as_ptr(), input.count_bytes(), &raw mut c_options);
+            if c_result.error == c::edn_error_t::EDN_OK {
                 Ok(Root(NonNull::new_unchecked(c_result.value)))
             } else {
                 Err(EdnError {
@@ -164,12 +161,16 @@ impl Root {
         }
     }
 
+    pub fn any<'a>(&'a self) -> Edn<'a, ()> {
+        Edn::new(self.0)
+    }
+
     pub fn into_edn<'a, U>(&'a self) -> Option<Edn<'a, U>>
     where
         U: kinds::EdnTag,
     {
         unsafe {
-            if edn_type(self.as_ptr()) == U::tag_of() {
+            if c::edn_type(self.as_ptr()) == U::tag_of() {
                 Some(Edn {
                     inner: self.0,
                     _phantom: PhantomData,
@@ -196,30 +197,30 @@ impl Root {
         self.into_edn()
     }
 
-    fn as_ptr(&self) -> *const edn_value_t {
+    fn as_ptr(&self) -> *const c::edn_value_t {
         self.0.as_ptr()
     }
 }
 
 impl Drop for Root {
     fn drop(&mut self) {
-        unsafe { edn_free(self.0.as_ptr()) }
+        unsafe { c::edn_free(self.0.as_ptr()) }
     }
 }
 
 impl<'a, T> Edn<'a, T> {
-    fn new(inner: NonNull<edn_value_t>) -> Self {
+    fn new(inner: NonNull<c::edn_value_t>) -> Self {
         Edn {
             inner,
             _phantom: PhantomData,
         }
     }
 
-    fn from_raw(val: *mut edn_value_t) -> Option<Edn<'a, T>> {
+    fn from_raw(val: *mut c::edn_value_t) -> Option<Edn<'a, T>> {
         NonNull::new(val).map(Self::new)
     }
 
-    unsafe fn from_raw_unchecked(val: *mut edn_value_t) -> Self {
+    unsafe fn from_raw_unchecked(val: *mut c::edn_value_t) -> Self {
         Self::new(NonNull::new_unchecked(val))
     }
 
@@ -247,27 +248,35 @@ impl<'a, T> Edn<'a, T> {
     where
         U: kinds::EdnTag,
     {
-        unsafe { edn_type(self.as_ptr()) == U::tag_of() }
+        unsafe { c::edn_type(self.as_ptr()) == U::tag_of() }
     }
 
     pub fn is_nil(&self) -> bool {
-        unsafe { edn_is_nil(self.as_ptr()) }
+        unsafe { c::edn_is_nil(self.as_ptr()) }
     }
 
     pub fn is_string(&self) -> bool {
-        unsafe { edn_is_string(self.as_ptr()) }
+        unsafe { c::edn_is_string(self.as_ptr()) }
     }
 
     pub fn is_number(&self) -> bool {
-        unsafe { edn_is_number(self.as_ptr()) }
+        unsafe { c::edn_is_number(self.as_ptr()) }
     }
 
     pub fn is_integer(&self) -> bool {
-        unsafe { edn_is_integer(self.as_ptr()) }
+        unsafe { c::edn_is_integer(self.as_ptr()) }
     }
 
     pub fn is_collection(&self) -> bool {
-        unsafe { edn_is_collection(self.as_ptr()) }
+        unsafe { c::edn_is_collection(self.as_ptr()) }
+    }
+
+    pub fn metadata(&self) -> Option<Edn<'a, kinds::Map>> {
+        Edn::from_raw(unsafe { c::edn_value_meta(self.as_ptr()) })
+    }
+
+    pub fn has_metadata(&self) -> bool {
+        unsafe { c::edn_value_has_meta(self.as_ptr()) }
     }
 
     // TODO: why can't this be a TryInto implementation without conflicting
@@ -275,7 +284,7 @@ impl<'a, T> Edn<'a, T> {
     pub fn as_f64(&self) -> Option<f64> {
         unsafe {
             let mut val = 0.0f64;
-            if edn_number_as_double(self.as_ptr(), &raw mut val) {
+            if c::edn_number_as_double(self.as_ptr(), &raw mut val) {
                 Some(val)
             } else {
                 None
@@ -283,7 +292,7 @@ impl<'a, T> Edn<'a, T> {
         }
     }
 
-    fn as_ptr(&self) -> *const edn_value_t {
+    fn as_ptr(&self) -> *const c::edn_value_t {
         self.inner.as_ptr()
     }
 }
@@ -298,7 +307,7 @@ impl<'a> Into<bool> for Edn<'a, kinds::Bool> {
     fn into(self) -> bool {
         unsafe {
             let mut val = false;
-            let ok = edn_bool_get(self.as_ptr(), &raw mut val);
+            let ok = c::edn_bool_get(self.as_ptr(), &raw mut val);
             if !ok {
                 panic!("Invariant violated: edn_bool_get failed")
             }
@@ -313,7 +322,7 @@ impl<'a> Into<i64> for Edn<'a, kinds::Int64> {
     fn into(self) -> i64 {
         unsafe {
             let mut val = 0i64;
-            let ok = edn_int64_get(self.as_ptr(), &raw mut val);
+            let ok = c::edn_int64_get(self.as_ptr(), &raw mut val);
             if !ok {
                 panic!("Invariant violated: edn_int64_get failed")
             }
@@ -330,7 +339,7 @@ impl<'a> Edn<'a, kinds::BigInt> {
             let mut length = 0usize;
             let mut negative = false;
             let mut radix = 0u8;
-            let val_ptr = edn_bigint_get(
+            let val_ptr = c::edn_bigint_get(
                 self.as_ptr(),
                 &raw mut length,
                 &raw mut negative,
@@ -355,7 +364,7 @@ impl<'a> Into<f64> for Edn<'a, kinds::Double> {
     fn into(self) -> f64 {
         unsafe {
             let mut val = 0f64;
-            let ok = edn_double_get(self.as_ptr(), &raw mut val);
+            let ok = c::edn_double_get(self.as_ptr(), &raw mut val);
             if !ok {
                 panic!("Invariant violated: edn_double_get failed")
             }
@@ -364,14 +373,28 @@ impl<'a> Into<f64> for Edn<'a, kinds::Double> {
     }
 }
 
-/// TODO: Ratio
+/// Ratio
+
+impl<'a> Edn<'a, kinds::Ratio> {
+    pub fn get(&self) -> (i64, i64) {
+        unsafe {
+            let mut numerator = 0i64;
+            let mut denominator = 0i64;
+            let ok = c::edn_ratio_get(self.as_ptr(), &raw mut numerator, &raw mut denominator);
+            if !ok {
+                panic!("Invariant violated: edn_ratio_get failed")
+            }
+            (numerator, denominator)
+        }
+    }
+}
 
 /// Characters
 impl<'a> Into<char> for Edn<'a, kinds::Char> {
     fn into(self) -> char {
         unsafe {
             let mut val = 0u32;
-            let ok = edn_character_get(self.as_ptr(), &raw mut val);
+            let ok = c::edn_character_get(self.as_ptr(), &raw mut val);
             if !ok {
                 panic!("Invariant violated: edn_character_get failed")
             }
@@ -384,13 +407,13 @@ impl<'a> Into<char> for Edn<'a, kinds::Char> {
 
 impl<'a> Edn<'a, kinds::String> {
     pub fn equals(&self, val: &CStr) -> bool {
-        unsafe { edn_string_equals(self.as_ptr(), val.as_ptr()) }
+        unsafe { c::edn_string_equals(self.as_ptr(), val.as_ptr()) }
     }
 
     pub fn as_c_str(&self) -> &'a CStr {
         unsafe {
             let mut len = 0usize;
-            let c_ptr = edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
+            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
@@ -410,7 +433,7 @@ impl<'a> Into<&'a str> for Edn<'a, kinds::String> {
     fn into(self) -> &'a str {
         unsafe {
             let mut len = 0usize;
-            let c_ptr = edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
+            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
@@ -437,7 +460,7 @@ impl<'a> Edn<'a, kinds::Keyword> {
             let mut namespace_size = 0usize;
             let mut name_ptr: *const c_char = std::ptr::null();
             let mut name_size = 0usize;
-            let ok = edn_keyword_get(
+            let ok = c::edn_keyword_get(
                 self.as_ptr(),
                 &raw mut namespace_ptr,
                 &raw mut namespace_size,
@@ -466,11 +489,11 @@ impl fmt::Display for Edn<'_, kinds::Keyword> {
 
 impl<'a> Edn<'a, kinds::Set> {
     fn len(&self) -> usize {
-        unsafe { edn_set_count(self.as_ptr()) }
+        unsafe { c::edn_set_count(self.as_ptr()) }
     }
 
     fn contains<U>(&self, val: Edn<'a, U>) -> bool {
-        unsafe { edn_set_contains(self.as_ptr(), val.as_ptr()) }
+        unsafe { c::edn_set_contains(self.as_ptr(), val.as_ptr()) }
     }
 
     fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
@@ -486,7 +509,7 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Set> {
     type Item = Edn<'a, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let val = Edn::from_raw(unsafe { edn_set_get(self.value.as_ptr(), self.index) });
+        let val = Edn::from_raw(unsafe { c::edn_set_get(self.value.as_ptr(), self.index) });
         if val.is_some() {
             self.index += 1;
         }
@@ -498,11 +521,11 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Set> {
 
 impl<'a> Edn<'a, kinds::Map> {
     pub fn contains<U>(&self, val: Edn<'a, U>) -> bool {
-        unsafe { edn_map_contains_key(self.as_ptr(), val.as_ptr()) }
+        unsafe { c::edn_map_contains_key(self.as_ptr(), val.as_ptr()) }
     }
 
     pub fn get<U>(&self, key: Edn<'a, U>) -> Option<Edn<'a, ()>> {
-        Edn::from_raw(unsafe { edn_map_lookup(self.as_ptr(), key.as_ptr()) })
+        Edn::from_raw(unsafe { c::edn_map_lookup(self.as_ptr(), key.as_ptr()) })
     }
 
     pub fn get_by_string(&self, string: &str) -> Option<Edn<'a, ()>> {
@@ -510,7 +533,7 @@ impl<'a> Edn<'a, kinds::Map> {
     }
 
     pub fn get_by_cstr(&self, string: &CStr) -> Option<Edn<'a, ()>> {
-        Edn::from_raw(unsafe { edn_map_get_string_key(self.as_ptr(), string.as_ptr()) })
+        Edn::from_raw(unsafe { c::edn_map_get_string_key(self.as_ptr(), string.as_ptr()) })
     }
 
     pub fn get_by_keyword(&self, keyword: &str) -> Option<Edn<'a, ()>> {
@@ -518,7 +541,7 @@ impl<'a> Edn<'a, kinds::Map> {
     }
 
     pub fn get_by_keyword_cstr(&self, keyword: &CStr) -> Option<Edn<'a, ()>> {
-        Edn::from_raw(unsafe { edn_map_get_keyword(self.as_ptr(), keyword.as_ptr()) })
+        Edn::from_raw(unsafe { c::edn_map_get_keyword(self.as_ptr(), keyword.as_ptr()) })
     }
 
     pub fn get_by_namespaced_keyword(&self, namespace: &str, name: &str) -> Option<Edn<'a, ()>> {
@@ -534,7 +557,7 @@ impl<'a> Edn<'a, kinds::Map> {
         name: &CStr,
     ) -> Option<Edn<'a, ()>> {
         Edn::from_raw(unsafe {
-            edn_map_get_namespaced_keyword(self.as_ptr(), namespace.as_ptr(), name.as_ptr())
+            c::edn_map_get_namespaced_keyword(self.as_ptr(), namespace.as_ptr(), name.as_ptr())
         })
     }
 }
@@ -545,8 +568,8 @@ impl<'a> Edn<'a, kinds::Tagged> {
         unsafe {
             let mut tag_ptr: *const c_char = null();
             let mut tag_length = 0usize;
-            let mut value_ptr: *mut edn_value_t = null_mut();
-            let ok = edn_tagged_get(
+            let mut value_ptr: *mut c::edn_value_t = null_mut();
+            let ok = c::edn_tagged_get(
                 self.as_ptr(),
                 &raw mut tag_ptr,
                 &raw mut tag_length,
@@ -567,11 +590,11 @@ impl<'a> Edn<'a, kinds::Tagged> {
 
 impl<'a> Edn<'a, kinds::Vector> {
     pub fn len(&self) -> usize {
-        unsafe { edn_vector_count(self.as_ptr()) }
+        unsafe { c::edn_vector_count(self.as_ptr()) }
     }
 
     pub fn get(&self, idx: usize) -> Option<Edn<'a, ()>> {
-        Edn::from_raw(unsafe { edn_vector_get(self.as_ptr(), idx) })
+        Edn::from_raw(unsafe { c::edn_vector_get(self.as_ptr(), idx) })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
@@ -587,7 +610,7 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Vector> {
     type Item = Edn<'a, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let val = Edn::from_raw(unsafe { edn_vector_get(self.value.as_ptr(), self.index) });
+        let val = Edn::from_raw(unsafe { c::edn_vector_get(self.value.as_ptr(), self.index) });
         if val.is_some() {
             self.index += 1;
         }
@@ -599,11 +622,11 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Vector> {
 
 impl<'a> Edn<'a, kinds::List> {
     pub fn len(&self) -> usize {
-        unsafe { edn_list_count(self.as_ptr()) }
+        unsafe { c::edn_list_count(self.as_ptr()) }
     }
 
     pub fn get(&self, idx: usize) -> Option<Edn<'a, ()>> {
-        Edn::from_raw(unsafe { edn_list_get(self.as_ptr(), idx) })
+        Edn::from_raw(unsafe { c::edn_list_get(self.as_ptr(), idx) })
     }
 
     pub fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
@@ -619,7 +642,7 @@ impl<'a> Iterator for EdnIterator<'a, kinds::List> {
     type Item = Edn<'a, ()>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let val = Edn::from_raw(unsafe { edn_list_get(self.value.as_ptr(), self.index) });
+        let val = Edn::from_raw(unsafe { c::edn_list_get(self.value.as_ptr(), self.index) });
         if val.is_some() {
             self.index += 1;
         }
@@ -636,7 +659,7 @@ impl<'a> Edn<'a, kinds::Symbol> {
             let mut namespace_size = 0usize;
             let mut name_ptr: *const c_char = std::ptr::null();
             let mut name_size = 0usize;
-            let ok = edn_symbol_get(
+            let ok = c::edn_symbol_get(
                 self.as_ptr(),
                 &raw mut namespace_ptr,
                 &raw mut namespace_size,
@@ -678,9 +701,9 @@ impl<'a> NamespacedStr<'a> {
     }
 }
 
-impl Into<edn_default_reader_mode_t> for DefaultReaderMode {
-    fn into(self) -> edn_default_reader_mode_t {
-        use edn_default_reader_mode_t::*;
+impl Into<c::edn_default_reader_mode_t> for DefaultReaderMode {
+    fn into(self) -> c::edn_default_reader_mode_t {
+        use c::edn_default_reader_mode_t::*;
         match self {
             DefaultReaderMode::Passthrough => EDN_DEFAULT_READER_PASSTHROUGH,
             DefaultReaderMode::Unwrap => EDN_DEFAULT_READER_UNWRAP,
@@ -693,7 +716,7 @@ impl Into<edn_default_reader_mode_t> for DefaultReaderMode {
 impl ReaderRegistry {
     pub fn new() -> Self {
         unsafe {
-            let registry = edn_reader_registry_create();
+            let registry = c::edn_reader_registry_create();
             if registry.is_null() {
                 panic!("Out of memory in ReaderRegistry::new")
             }
@@ -711,13 +734,13 @@ impl ReaderRegistry {
 
 impl Drop for ReaderRegistry {
     fn drop(&mut self) {
-        unsafe { edn_reader_registry_destroy(self.0.as_ptr()) }
+        unsafe { c::edn_reader_registry_destroy(self.0.as_ptr()) }
     }
 }
 
 impl ParseOptions {
-    fn as_raw(&self) -> edn_parse_options_t {
-        edn_parse_options_t {
+    fn as_raw(&self) -> c::edn_parse_options_t {
+        c::edn_parse_options_t {
             reader_registry: self.registry.0.as_ptr(),
             eof_value: self.eof_value.0.as_ptr(),
             default_reader_mode: self.default_reader_mode.clone().into(),
@@ -748,9 +771,9 @@ pub struct EdnError {
     pub message: String,
 }
 
-impl From<edn_error_t> for EdnErrorKind {
-    fn from(error: edn_error_t) -> Self {
-        use edn_error_t::*;
+impl From<c::edn_error_t> for EdnErrorKind {
+    fn from(error: c::edn_error_t) -> Self {
+        use c::edn_error_t::*;
         match error {
             EDN_OK => unreachable!("EDN_OK should not be converted to EdnErrorKind"),
             EDN_ERROR_INVALID_SYNTAX => EdnErrorKind::InvalidSyntax,
