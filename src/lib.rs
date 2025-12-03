@@ -127,6 +127,28 @@ struct EdnIterator<'a, T> {
 }
 
 impl Root {
+    /// Parse EDN from a Rust string slice.
+    ///
+    /// This is the most convenient parsing method for Rust strings.
+    ///
+    /// # Example
+    /// ```
+    /// # use bleedn::Root;
+    /// let root = Root::parse("[1 2 3]").unwrap();
+    /// ```
+    pub fn parse(input: impl AsRef<str>) -> Result<Self, ParseError> {
+        let c_string = CString::new(input.as_ref()).map_err(|_| ParseError {
+            kind: EdnError::InvalidUtf8,
+            line: 0,
+            column: 0,
+            message: "Input contains null bytes".to_string(),
+        })?;
+        Self::parse_cstr(&c_string)
+    }
+
+    /// Parse EDN from a C string.
+    ///
+    /// Use this if you already have a `CStr` to avoid an extra allocation.
     pub fn parse_cstr(input: &CStr) -> Result<Self, ParseError> {
         unsafe {
             let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
@@ -815,9 +837,16 @@ mod tests {
 
     #[test]
     fn test_parse_nil() {
-        let input = CString::new("nil").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Root::parse("nil").unwrap();
         assert!(root.is_nil());
+    }
+
+    #[test]
+    fn test_parse_with_null_bytes() {
+        let result = Root::parse("hello\0world");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, EdnError::InvalidUtf8);
     }
 
     #[test]
