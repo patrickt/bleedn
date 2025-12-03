@@ -1,8 +1,3 @@
-#![allow(non_upper_case_globals)]
-#![allow(non_camel_case_types)]
-#![allow(non_snake_case)]
-#![allow(dead_code)]
-
 use std::{
     borrow::Borrow,
     ffi::{c_char, CStr, CString},
@@ -13,23 +8,6 @@ use std::{
 };
 
 pub mod kinds {
-    pub struct BigDec;
-    pub struct BigInt;
-    pub struct Bool;
-    pub struct Char;
-    pub struct Double;
-    pub struct Int64;
-    pub struct Keyword;
-    pub struct List;
-    pub struct Map;
-    pub struct Nil;
-    pub struct Ratio;
-    pub struct Set;
-    pub struct String;
-    pub struct Symbol;
-    pub struct Tagged;
-    pub struct Vector;
-
     pub trait EdnTag {
         fn tag_of() -> edn_type_t;
     }
@@ -39,6 +17,7 @@ pub mod kinds {
     macro_rules! impl_edn_tag {
         ($($kind:ident => $tag:ident),* $(,)?) => {
             $(
+                pub struct $kind;
                 impl EdnTag for $kind {
                     fn tag_of() -> edn_type_t {
                         edn_type_t::$tag
@@ -70,6 +49,9 @@ pub mod kinds {
 
 // Include the generated bindings
 pub mod c {
+    #![allow(non_upper_case_globals)]
+    #![allow(non_camel_case_types)]
+    #![allow(non_snake_case)]
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
@@ -93,14 +75,14 @@ impl<'a, T> Clone for Edn<'a, T> {
 }
 
 pub struct Bignum<'a> {
-    value: &'a str,
-    negative: bool,
-    radix: Option<u8>,
+    pub value: &'a str,
+    pub negative: bool,
+    pub radix: Option<u8>,
 }
 
 pub struct NamespacedStr<'a> {
-    namespace: Option<&'a str>,
-    name: &'a str,
+    pub namespace: Option<&'a str>,
+    pub name: &'a str,
 }
 
 struct EdnIterator<'a, T> {
@@ -330,6 +312,28 @@ impl<'a> Edn<'a, kinds::BigInt> {
     }
 }
 
+/// BigDecs
+
+impl<'a> Edn<'a, kinds::BigDec> {
+    pub fn to_bignum(&self) -> Bignum<'a> {
+        unsafe {
+            let mut length = 0usize;
+            let mut negative = false;
+            let val_ptr =
+                c::edn_bigdec_get(self.as_ptr(), &raw mut length, &raw mut negative) as *const u8;
+            if val_ptr.is_null() {
+                panic!("Invariant violated: edn_bigdec_get failed")
+            }
+            let slice = std::slice::from_raw_parts(val_ptr, length);
+            Bignum {
+                value: str::from_utf8_unchecked(slice),
+                negative,
+                radix: None,
+            }
+        }
+    }
+}
+
 /// Doubles
 
 impl<'a> Into<f64> for Edn<'a, kinds::Double> {
@@ -463,15 +467,15 @@ impl fmt::Display for Edn<'_, kinds::Keyword> {
 /// Sets
 
 impl<'a> Edn<'a, kinds::Set> {
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         unsafe { c::edn_set_count(self.as_ptr()) }
     }
 
-    fn contains<U>(&self, val: Edn<'a, U>) -> bool {
+    pub fn contains<U>(&self, val: Edn<'a, U>) -> bool {
         unsafe { c::edn_set_contains(self.as_ptr(), val.as_ptr()) }
     }
 
-    fn iter(&self) -> impl ExactSizeIterator<Item = Edn<'a, ()>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Edn<'a, ()>> {
         EdnIterator {
             value: self.clone(),
             index: 0,
@@ -646,7 +650,7 @@ impl<'a> ExactSizeIterator for EdnIterator<'a, kinds::List> {
 /// Symbols
 
 impl<'a> Edn<'a, kinds::Symbol> {
-    fn as_namespaced_str(&self) -> NamespacedStr<'a> {
+    pub fn as_namespaced_str(&self) -> NamespacedStr<'a> {
         unsafe {
             let mut namespace_ptr: *const c_char = std::ptr::null();
             let mut namespace_size = 0usize;
@@ -965,5 +969,26 @@ mod tests {
         let name = first_map.get_by_keyword("name").unwrap();
         let name_str = name.cast::<kinds::String>().unwrap();
         assert_eq!(name_str.as_str(), "Alice");
+    }
+
+    #[test]
+    fn test_bigdec() {
+        let input = CString::new("123.456M").unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
+
+        let bigdec_edn = root.cast::<kinds::BigDec>().unwrap();
+        let bignum = bigdec_edn.to_bignum();
+        assert_eq!(bignum.value, "123.456");
+        assert_eq!(bignum.negative, false);
+        assert_eq!(bignum.radix, None);
+
+        // Test negative BigDec
+        let neg_input = CString::new("-99.99M").unwrap();
+        let neg_root = Doc::parse_cstr(&neg_input).unwrap();
+        let neg_bigdec_edn = neg_root.cast::<kinds::BigDec>().unwrap();
+        let neg_bignum = neg_bigdec_edn.to_bignum();
+        assert_eq!(neg_bignum.value, "99.99");
+        assert_eq!(neg_bignum.negative, true);
+        assert_eq!(neg_bignum.radix, None);
     }
 }
