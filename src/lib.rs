@@ -81,7 +81,7 @@ pub struct Edn<'a, T = ()> {
 
 #[repr(transparent)]
 #[derive(Debug)]
-pub struct Root(Edn<'static, ()>);
+pub struct Doc(Edn<'static, ()>);
 
 impl<'a, T> Clone for Edn<'a, T> {
     fn clone(&self) -> Self {
@@ -114,7 +114,7 @@ pub enum DefaultReaderMode {
 
 pub struct ParseOptions {
     registry: ReaderRegistry,
-    eof_value: Root,
+    eof_value: Doc,
     default_reader_mode: DefaultReaderMode,
 }
 
@@ -126,7 +126,7 @@ struct EdnIterator<'a, T> {
     max: usize,
 }
 
-impl Root {
+impl Doc {
     /// Parse EDN from a Rust string slice.
     ///
     /// This is the most convenient parsing method for Rust strings.
@@ -153,7 +153,7 @@ impl Root {
         unsafe {
             let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
             if c_result.error == c::edn_error_t::EDN_OK {
-                Ok(Root(Edn {
+                Ok(Doc(Edn {
                     inner: NonNull::new_unchecked(c_result.value),
                     _phantom: PhantomData,
                 }))
@@ -179,7 +179,7 @@ impl Root {
             let c_result =
                 c::edn_read_with_options(input.as_ptr(), input.count_bytes(), &raw mut c_options);
             if c_result.error == c::edn_error_t::EDN_OK {
-                Ok(Root(Edn {
+                Ok(Doc(Edn {
                     inner: NonNull::new_unchecked(c_result.value),
                     _phantom: PhantomData,
                 }))
@@ -197,13 +197,13 @@ impl Root {
     }
 }
 
-impl Drop for Root {
+impl Drop for Doc {
     fn drop(&mut self) {
         unsafe { c::edn_free(self.0.inner.as_ptr()) }
     }
 }
 
-impl Deref for Root {
+impl Deref for Doc {
     type Target = Edn<'static, ()>;
 
     fn deref(&self) -> &Self::Target {
@@ -212,13 +212,13 @@ impl Deref for Root {
     }
 }
 
-impl Borrow<Edn<'static, ()>> for Root {
+impl Borrow<Edn<'static, ()>> for Doc {
     fn borrow(&self) -> &Edn<'static, ()> {
         self.deref()
     }
 }
 
-impl AsRef<Edn<'static, ()>> for Root {
+impl AsRef<Edn<'static, ()>> for Doc {
     fn as_ref(&self) -> &Edn<'static, ()> {
         self.deref()
     }
@@ -765,7 +765,7 @@ impl ReaderRegistry {
 
     pub fn register<'a, F>(&self, _tag: &str, _reader: F)
     where
-        F: Fn(Root, &'a Arena, &'a str) -> (),
+        F: Fn(Doc, &'a Arena, &'a str) -> (),
     {
         todo!()
     }
@@ -837,13 +837,13 @@ mod tests {
 
     #[test]
     fn test_parse_nil() {
-        let root = Root::parse("nil").unwrap();
+        let root = Doc::parse("nil").unwrap();
         assert!(root.is_nil());
     }
 
     #[test]
     fn test_parse_with_null_bytes() {
-        let result = Root::parse("hello\0world");
+        let result = Doc::parse("hello\0world");
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.kind, EdnError::InvalidUtf8);
@@ -852,7 +852,7 @@ mod tests {
     #[test]
     fn test_parse_string() {
         let input = CString::new(r#""hello world""#).unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
         assert!(root.is_string());
 
         let edn_string = root.cast::<kinds::String>().unwrap();
@@ -862,7 +862,7 @@ mod tests {
     #[test]
     fn test_parse_integer() {
         let input = CString::new("42").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
         assert!(root.is_integer());
 
         let edn_int = root.cast::<kinds::Int64>().unwrap();
@@ -873,7 +873,7 @@ mod tests {
     #[test]
     fn test_parse_float() {
         let input = CString::new("3.14").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
         assert!(root.is_number());
 
         assert_eq!(root.as_f64(), Some(3.14));
@@ -882,7 +882,7 @@ mod tests {
     #[test]
     fn test_parse_boolean() {
         let input = CString::new("true").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let edn_bool = root.cast::<kinds::Bool>().unwrap();
         let val: bool = edn_bool.into();
@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn test_parse_vector() {
         let input = CString::new("[1 2 3]").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
         assert!(root.is_collection());
 
         let vec = root.cast::<kinds::Vector>().unwrap();
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn test_parse_list() {
         let input = CString::new("(1 2 3)").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let list = root.cast::<kinds::List>().unwrap();
         assert_eq!(list.len(), 3);
@@ -916,7 +916,7 @@ mod tests {
     #[test]
     fn test_parse_map() {
         let input = CString::new(r#"{:name "Alice" :age 30}"#).unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let map = root.cast::<kinds::Map>().unwrap();
 
@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn test_parse_set() {
         let input = CString::new("#{1 2 3}").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let set = root.cast::<kinds::Set>().unwrap();
         assert_eq!(set.len(), 3);
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn test_vector_iterator() {
         let input = CString::new("[1 2 3 4 5]").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         let mut sum = 0i64;
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn test_exact_size_iterator() {
         let input = CString::new("[1 2 3]").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         let iter = vec.iter();
@@ -965,7 +965,7 @@ mod tests {
     #[test]
     fn test_keyword() {
         let input = CString::new(":hello").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let keyword = root.cast::<kinds::Keyword>().unwrap();
         assert_eq!(format!("{}", keyword), ":hello");
@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn test_namespaced_keyword() {
         let input = CString::new(":ns/name").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let keyword = root.cast::<kinds::Keyword>().unwrap();
         assert_eq!(format!("{}", keyword), ":ns/name");
@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn test_parse_error() {
         let input = CString::new("[1 2").unwrap();
-        let result = Root::parse_cstr(&input);
+        let result = Doc::parse_cstr(&input);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn test_deref_coercion() {
         let input = CString::new(r#""test""#).unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         // Should be able to call Edn methods directly on Root via Deref
         assert!(root.is_string());
@@ -1006,7 +1006,7 @@ mod tests {
         use std::borrow::Borrow;
 
         let input = CString::new("42").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let borrowed: &Edn<'static, ()> = root.borrow();
         assert!(borrowed.is_integer());
@@ -1015,7 +1015,7 @@ mod tests {
     #[test]
     fn test_as_ref_trait() {
         let input = CString::new("42").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let referenced: &Edn<'static, ()> = root.as_ref();
         assert!(referenced.is_integer());
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn test_ratio() {
         let input = CString::new("22/7").unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let ratio = root.cast::<kinds::Ratio>().unwrap();
         let (num, denom) = ratio.get();
@@ -1035,7 +1035,7 @@ mod tests {
     #[test]
     fn test_character() {
         let input = CString::new(r#"\a"#).unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let ch = root.cast::<kinds::Char>().unwrap();
         let c: char = ch.into();
@@ -1045,7 +1045,7 @@ mod tests {
     #[test]
     fn test_nested_structures() {
         let input = CString::new(r#"[{:name "Alice"} {:name "Bob"}]"#).unwrap();
-        let root = Root::parse_cstr(&input).unwrap();
+        let root = Doc::parse_cstr(&input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         assert_eq!(vec.len(), 2);
