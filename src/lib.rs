@@ -390,6 +390,7 @@ impl<'a> Edn<'a, kinds::Ratio> {
 }
 
 /// Characters
+
 impl<'a> Into<char> for Edn<'a, kinds::Char> {
     fn into(self) -> char {
         unsafe {
@@ -496,7 +497,7 @@ impl<'a> Edn<'a, kinds::Set> {
         unsafe { c::edn_set_contains(self.as_ptr(), val.as_ptr()) }
     }
 
-    fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
+    fn iter(&self) -> impl ExactSizeIterator<Item = Edn<'a, ()>> {
         EdnIterator {
             value: self.clone(),
             index: 0,
@@ -514,6 +515,12 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Set> {
             self.index += 1;
         }
         val
+    }
+}
+
+impl<'a> ExactSizeIterator for EdnIterator<'a, kinds::Set> {
+    fn len(&self) -> usize {
+        self.max - self.index
     }
 }
 
@@ -597,7 +604,7 @@ impl<'a> Edn<'a, kinds::Vector> {
         Edn::from_raw(unsafe { c::edn_vector_get(self.as_ptr(), idx) })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Edn<'a, ()>> {
         EdnIterator {
             value: self.clone(),
             index: 0,
@@ -618,6 +625,12 @@ impl<'a> Iterator for EdnIterator<'a, kinds::Vector> {
     }
 }
 
+impl<'a> ExactSizeIterator for EdnIterator<'a, kinds::Vector> {
+    fn len(&self) -> usize {
+        self.max - self.index
+    }
+}
+
 /// Lists
 
 impl<'a> Edn<'a, kinds::List> {
@@ -629,7 +642,7 @@ impl<'a> Edn<'a, kinds::List> {
         Edn::from_raw(unsafe { c::edn_list_get(self.as_ptr(), idx) })
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = Edn<'a, ()>> {
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = Edn<'a, ()>> {
         EdnIterator {
             value: self.clone(),
             index: 0,
@@ -647,6 +660,12 @@ impl<'a> Iterator for EdnIterator<'a, kinds::List> {
             self.index += 1;
         }
         val
+    }
+}
+
+impl<'a> ExactSizeIterator for EdnIterator<'a, kinds::List> {
+    fn len(&self) -> usize {
+        self.max - self.index
     }
 }
 
