@@ -7,6 +7,9 @@ use std::{
     ptr::{null, null_mut, NonNull},
 };
 
+/// Rather than providing a discriminated enum of all the cases of an EDN value,
+/// this library uses phantom types and safe casts to refine values to more specific
+/// types.
 pub mod kinds {
     pub trait EdnTag {
         fn tag_of() -> edn_type_t;
@@ -68,12 +71,15 @@ pub struct Edn<'a, T = ()> {
 #[derive(Debug)]
 pub struct Doc(Edn<'static, ()>);
 
+/// A native representation of EDN bignums. Should be suitable for consumption
+/// by whatever arbitrary-precision library you might be using.
 pub struct Bignum<'a> {
     pub value: &'a str,
     pub negative: bool,
     pub radix: Option<u8>,
 }
 
+/// A string slice with an optional namespace. Used for keywords and symbols.
 pub struct NamespacedStr<'a> {
     pub namespace: Option<&'a str>,
     pub name: &'a str,
@@ -86,30 +92,16 @@ struct EdnIterator<'a, T> {
 }
 
 impl Doc {
-    /// Parse EDN from a Rust string slice.
-    ///
-    /// This is the most convenient parsing method for Rust strings.
+    /// Parse EDN from a string slice.
     ///
     /// # Example
     /// ```
     /// let root = bleedn::Doc::parse("[1 2 3]").unwrap();
     /// ```
     pub fn parse(input: impl AsRef<str>) -> Result<Self, ParseError> {
-        let c_string = CString::new(input.as_ref()).map_err(|_| ParseError {
-            kind: EdnError::InvalidUtf8,
-            line: 0,
-            column: 0,
-            message: "Input contains null bytes".to_string(),
-        })?;
-        Self::parse_cstr(&c_string)
-    }
-
-    /// Parse EDN from a C string.
-    ///
-    /// Use this if you already have a `CStr` to avoid an extra allocation.
-    pub fn parse_cstr(input: &CStr) -> Result<Self, ParseError> {
+        let input_str = input.as_ref();
         unsafe {
-            let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
+            let c_result = c::edn_read(input_str.as_ptr() as *const c_char, input_str.len());
             if c_result.error == c::edn_error_t::EDN_OK {
                 Ok(Doc(Edn {
                     inner: NonNull::new_unchecked(c_result.value),
@@ -139,7 +131,6 @@ impl Deref for Doc {
     type Target = Edn<'static, ()>;
 
     fn deref(&self) -> &Self::Target {
-        // Safety: Doc is repr(transparent) over Edn<'static, ()>
         &self.0
     }
 }
@@ -172,7 +163,7 @@ impl<'a, T> Edn<'a, T> {
         Self::new(NonNull::new_unchecked(val))
     }
 
-    pub fn cast<U>(&self) -> Option<Edn<'a, U>>
+    pub fn cast<U>(&'a self) -> Option<Edn<'a, U>>
     where
         U: kinds::EdnTag,
     {
@@ -192,6 +183,7 @@ impl<'a, T> Edn<'a, T> {
         }
     }
 
+    /// Is this node of the specified type (as determined with the turbofish operator)?
     pub fn has_tag<U>(&self) -> bool
     where
         U: kinds::EdnTag,
@@ -310,11 +302,11 @@ impl<'a> Edn<'a, kinds::BigInt> {
                 &raw mut length,
                 &raw mut negative,
                 &raw mut radix,
-            ) as *const u8;
+            );
             if val_ptr.is_null() {
                 panic!("Invariant violated: edn_bigint_getfailed")
             }
-            let slice = std::slice::from_raw_parts(val_ptr, length);
+            let slice = std::slice::from_raw_parts(val_ptr as *const u8, length);
             Bignum {
                 value: str::from_utf8_unchecked(slice),
                 negative,
@@ -331,12 +323,11 @@ impl<'a> Edn<'a, kinds::BigDec> {
         unsafe {
             let mut length = 0usize;
             let mut negative = false;
-            let val_ptr =
-                c::edn_bigdec_get(self.as_ptr(), &raw mut length, &raw mut negative) as *const u8;
+            let val_ptr = c::edn_bigdec_get(self.as_ptr(), &raw mut length, &raw mut negative);
             if val_ptr.is_null() {
                 panic!("Invariant violated: edn_bigdec_get failed")
             }
-            let slice = std::slice::from_raw_parts(val_ptr, length);
+            let slice = std::slice::from_raw_parts(val_ptr as *const u8, length);
             Bignum {
                 value: str::from_utf8_unchecked(slice),
                 negative,
@@ -402,12 +393,12 @@ impl<'a> Edn<'a, kinds::String> {
     pub fn as_c_str(&self) -> &'a CStr {
         unsafe {
             let mut len = 0usize;
-            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
+            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len);
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
             // len is the string length WITHOUT null terminator, so we need len+1 for CStr
-            let slice = std::slice::from_raw_parts(c_ptr, len + 1);
+            let slice = std::slice::from_raw_parts(c_ptr as *const u8, len + 1);
             CStr::from_bytes_with_nul_unchecked(slice)
         }
     }
@@ -423,12 +414,12 @@ impl<'a> Into<&'a str> for Edn<'a, kinds::String> {
     fn into(self) -> &'a str {
         unsafe {
             let mut len = 0usize;
-            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len) as *const u8;
+            let c_ptr = c::edn_string_get(self.inner.as_ptr(), &raw mut len);
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
             // len is the string length WITHOUT null terminator, so we need len+1 for CStr
-            let slice = std::slice::from_raw_parts(c_ptr, len + 1);
+            let slice = std::slice::from_raw_parts(c_ptr as *const u8, len + 1);
             CStr::from_bytes_with_nul_unchecked(slice)
                 .to_str()
                 .expect("Invariant violated: bad UTF-8 in Edn<String>")
@@ -758,7 +749,6 @@ impl From<c::edn_error_t> for EdnError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
 
     #[test]
     fn test_parse_nil() {
@@ -767,17 +757,9 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_with_null_bytes() {
-        let result = Doc::parse("hello\0world");
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert_eq!(err.kind, EdnError::InvalidUtf8);
-    }
-
-    #[test]
     fn test_parse_string() {
-        let input = CString::new(r#""hello world""#).unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = r#""hello world""#;
+        let root = Doc::parse(input).unwrap();
         assert!(root.is_string());
 
         let edn_string = root.cast::<kinds::String>().unwrap();
@@ -786,8 +768,8 @@ mod tests {
 
     #[test]
     fn test_parse_integer() {
-        let input = CString::new("42").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "42";
+        let root = Doc::parse(input).unwrap();
         assert!(root.is_integer());
 
         let edn_int = root.cast::<kinds::Int64>().unwrap();
@@ -797,8 +779,8 @@ mod tests {
 
     #[test]
     fn test_parse_float() {
-        let input = CString::new("3.14").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "3.14";
+        let root = Doc::parse(input).unwrap();
         assert!(root.is_number());
 
         assert_eq!(root.as_f64(), Some(3.14));
@@ -806,8 +788,8 @@ mod tests {
 
     #[test]
     fn test_parse_boolean() {
-        let input = CString::new("true").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "true";
+        let root = Doc::parse(input).unwrap();
 
         let edn_bool = root.cast::<kinds::Bool>().unwrap();
         let val: bool = edn_bool.into();
@@ -816,8 +798,8 @@ mod tests {
 
     #[test]
     fn test_parse_vector() {
-        let input = CString::new("[1 2 3]").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "[1 2 3]";
+        let root = Doc::parse(input).unwrap();
         assert!(root.is_collection());
 
         let vec = root.cast::<kinds::Vector>().unwrap();
@@ -831,8 +813,8 @@ mod tests {
 
     #[test]
     fn test_parse_list() {
-        let input = CString::new("(1 2 3)").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "(1 2 3)";
+        let root = Doc::parse(input).unwrap();
 
         let list = root.cast::<kinds::List>().unwrap();
         assert_eq!(list.len(), 3);
@@ -840,8 +822,8 @@ mod tests {
 
     #[test]
     fn test_parse_map() {
-        let input = CString::new(r#"{:name "Alice" :age 30}"#).unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = r#"{:name "Alice" :age 30}"#;
+        let root = Doc::parse(input).unwrap();
 
         let map = root.cast::<kinds::Map>().unwrap();
 
@@ -852,8 +834,8 @@ mod tests {
 
     #[test]
     fn test_parse_set() {
-        let input = CString::new("#{1 2 3}").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "#{1 2 3}";
+        let root = Doc::parse(input).unwrap();
 
         let set = root.cast::<kinds::Set>().unwrap();
         assert_eq!(set.len(), 3);
@@ -861,8 +843,8 @@ mod tests {
 
     #[test]
     fn test_vector_iterator() {
-        let input = CString::new("[1 2 3 4 5]").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "[1 2 3 4 5]";
+        let root = Doc::parse(input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         let mut sum = 0i64;
@@ -878,8 +860,8 @@ mod tests {
 
     #[test]
     fn test_exact_size_iterator() {
-        let input = CString::new("[1 2 3]").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "[1 2 3]";
+        let root = Doc::parse(input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         let iter = vec.iter();
@@ -889,8 +871,8 @@ mod tests {
 
     #[test]
     fn test_keyword() {
-        let input = CString::new(":hello").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = ":hello";
+        let root = Doc::parse(input).unwrap();
 
         let keyword = root.cast::<kinds::Keyword>().unwrap();
         assert_eq!(format!("{}", keyword), ":hello");
@@ -898,8 +880,8 @@ mod tests {
 
     #[test]
     fn test_namespaced_keyword() {
-        let input = CString::new(":ns/name").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = ":ns/name";
+        let root = Doc::parse(input).unwrap();
 
         let keyword = root.cast::<kinds::Keyword>().unwrap();
         assert_eq!(format!("{}", keyword), ":ns/name");
@@ -907,8 +889,8 @@ mod tests {
 
     #[test]
     fn test_parse_error() {
-        let input = CString::new("[1 2").unwrap();
-        let result = Doc::parse_cstr(&input);
+        let input = "[1 2";
+        let result = Doc::parse(input);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -917,8 +899,8 @@ mod tests {
 
     #[test]
     fn test_deref_coercion() {
-        let input = CString::new(r#""test""#).unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = r#""test""#;
+        let root = Doc::parse(input).unwrap();
 
         // Should be able to call Edn methods directly on Doc via Deref
         assert!(root.is_string());
@@ -930,8 +912,8 @@ mod tests {
     fn test_borrow_trait() {
         use std::borrow::Borrow;
 
-        let input = CString::new("42").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "42";
+        let root = Doc::parse(input).unwrap();
 
         let borrowed: &Edn<'static, ()> = root.borrow();
         assert!(borrowed.is_integer());
@@ -939,8 +921,8 @@ mod tests {
 
     #[test]
     fn test_as_ref_trait() {
-        let input = CString::new("42").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "42";
+        let root = Doc::parse(input).unwrap();
 
         let referenced: &Edn<'static, ()> = root.as_ref();
         assert!(referenced.is_integer());
@@ -948,8 +930,8 @@ mod tests {
 
     #[test]
     fn test_ratio() {
-        let input = CString::new("22/7").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "22/7";
+        let root = Doc::parse(input).unwrap();
 
         let ratio = root.cast::<kinds::Ratio>().unwrap();
         let (num, denom) = ratio.get();
@@ -959,8 +941,8 @@ mod tests {
 
     #[test]
     fn test_character() {
-        let input = CString::new(r#"\a"#).unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = r#"\a"#;
+        let root = Doc::parse(input).unwrap();
 
         let ch = root.cast::<kinds::Char>().unwrap();
         let c: char = ch.into();
@@ -969,8 +951,8 @@ mod tests {
 
     #[test]
     fn test_nested_structures() {
-        let input = CString::new(r#"[{:name "Alice"} {:name "Bob"}]"#).unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = r#"[{:name "Alice"} {:name "Bob"}]"#;
+        let root = Doc::parse(input).unwrap();
 
         let vec = root.cast::<kinds::Vector>().unwrap();
         assert_eq!(vec.len(), 2);
@@ -985,8 +967,8 @@ mod tests {
 
     #[test]
     fn test_bigdec() {
-        let input = CString::new("123.456M").unwrap();
-        let root = Doc::parse_cstr(&input).unwrap();
+        let input = "123.456M";
+        let root = Doc::parse(input).unwrap();
 
         let bigdec_edn = root.cast::<kinds::BigDec>().unwrap();
         let bignum = bigdec_edn.to_bignum();
@@ -995,8 +977,8 @@ mod tests {
         assert_eq!(bignum.radix, None);
 
         // Test negative BigDec
-        let neg_input = CString::new("-99.99M").unwrap();
-        let neg_root = Doc::parse_cstr(&neg_input).unwrap();
+        let neg_input = "-99.99M";
+        let neg_root = Doc::parse(neg_input).unwrap();
         let neg_bigdec_edn = neg_root.cast::<kinds::BigDec>().unwrap();
         let neg_bignum = neg_bigdec_edn.to_bignum();
         assert_eq!(neg_bignum.value, "99.99");
