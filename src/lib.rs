@@ -123,13 +123,13 @@ struct EdnIterator<'a, T> {
 }
 
 impl Root {
-    pub fn parse_cstr(input: &CStr) -> Result<Self, EdnError> {
+    pub fn parse_cstr(input: &CStr) -> Result<Self, ParseError> {
         unsafe {
             let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
             if c_result.error == c::edn_error_t::EDN_OK {
                 Ok(Root(NonNull::new_unchecked(c_result.value)))
             } else {
-                Err(EdnError {
+                Err(ParseError {
                     kind: c_result.error.into(),
                     line: c_result.error_line,
                     column: c_result.error_column,
@@ -141,7 +141,10 @@ impl Root {
         }
     }
 
-    pub fn parse_cstr_with_options(input: &CStr, options: &ParseOptions) -> Result<Self, EdnError> {
+    pub fn parse_cstr_with_options(
+        input: &CStr,
+        options: &ParseOptions,
+    ) -> Result<Self, ParseError> {
         unsafe {
             let mut c_options = options.as_raw();
             let c_result =
@@ -149,7 +152,7 @@ impl Root {
             if c_result.error == c::edn_error_t::EDN_OK {
                 Ok(Root(NonNull::new_unchecked(c_result.value)))
             } else {
-                Err(EdnError {
+                Err(ParseError {
                     kind: c_result.error.into(),
                     line: c_result.error_line,
                     column: c_result.error_column,
@@ -768,7 +771,7 @@ impl ParseOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EdnErrorKind {
+pub enum EdnError {
     InvalidSyntax,
     UnexpectedEof,
     InvalidUtf8,
@@ -783,29 +786,29 @@ pub enum EdnErrorKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EdnError {
-    pub kind: EdnErrorKind,
+pub struct ParseError {
+    pub kind: EdnError,
     pub line: usize,
     pub column: usize,
     pub message: String,
 }
 
-impl From<c::edn_error_t> for EdnErrorKind {
+impl From<c::edn_error_t> for EdnError {
     fn from(error: c::edn_error_t) -> Self {
         use c::edn_error_t::*;
         match error {
             EDN_OK => unreachable!("EDN_OK should not be converted to EdnErrorKind"),
-            EDN_ERROR_INVALID_SYNTAX => EdnErrorKind::InvalidSyntax,
-            EDN_ERROR_UNEXPECTED_EOF => EdnErrorKind::UnexpectedEof,
-            EDN_ERROR_OUT_OF_MEMORY => EdnErrorKind::OutOfMemory,
-            EDN_ERROR_INVALID_UTF8 => EdnErrorKind::InvalidUtf8,
-            EDN_ERROR_INVALID_NUMBER => EdnErrorKind::InvalidNumber,
-            EDN_ERROR_INVALID_STRING => EdnErrorKind::InvalidString,
-            EDN_ERROR_INVALID_ESCAPE => EdnErrorKind::InvalidEscape,
-            EDN_ERROR_UNMATCHED_DELIMITER => EdnErrorKind::UnmatchedDelimiter,
-            EDN_ERROR_UNKNOWN_TAG => EdnErrorKind::UnknownTag,
-            EDN_ERROR_DUPLICATE_KEY => EdnErrorKind::DuplicateKey,
-            EDN_ERROR_DUPLICATE_ELEMENT => EdnErrorKind::DuplicateElement,
+            EDN_ERROR_INVALID_SYNTAX => EdnError::InvalidSyntax,
+            EDN_ERROR_UNEXPECTED_EOF => EdnError::UnexpectedEof,
+            EDN_ERROR_OUT_OF_MEMORY => EdnError::OutOfMemory,
+            EDN_ERROR_INVALID_UTF8 => EdnError::InvalidUtf8,
+            EDN_ERROR_INVALID_NUMBER => EdnError::InvalidNumber,
+            EDN_ERROR_INVALID_STRING => EdnError::InvalidString,
+            EDN_ERROR_INVALID_ESCAPE => EdnError::InvalidEscape,
+            EDN_ERROR_UNMATCHED_DELIMITER => EdnError::UnmatchedDelimiter,
+            EDN_ERROR_UNKNOWN_TAG => EdnError::UnknownTag,
+            EDN_ERROR_DUPLICATE_KEY => EdnError::DuplicateKey,
+            EDN_ERROR_DUPLICATE_ELEMENT => EdnError::DuplicateElement,
         }
     }
 }
