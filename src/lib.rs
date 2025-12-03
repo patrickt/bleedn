@@ -266,9 +266,7 @@ impl<'a> Into<bool> for Edn<'a, kinds::Bool> {
         unsafe {
             let mut val = false;
             let ok = c::edn_bool_get(self.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: edn_bool_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_bool_get failed");
             val
         }
     }
@@ -281,9 +279,7 @@ impl<'a> Into<i64> for Edn<'a, kinds::Int64> {
         unsafe {
             let mut val = 0i64;
             let ok = c::edn_int64_get(self.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: edn_int64_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_int64_get failed");
             val
         }
     }
@@ -344,9 +340,7 @@ impl<'a> Into<f64> for Edn<'a, kinds::Float> {
         unsafe {
             let mut val = 0f64;
             let ok = c::edn_double_get(self.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: edn_double_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_double_get failed");
             val
         }
     }
@@ -360,9 +354,7 @@ impl<'a> Edn<'a, kinds::Ratio> {
             let mut numerator = 0i64;
             let mut denominator = 0i64;
             let ok = c::edn_ratio_get(self.as_ptr(), &raw mut numerator, &raw mut denominator);
-            if !ok {
-                panic!("Invariant violated: edn_ratio_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_ratio_get failed");
             (numerator, denominator)
         }
     }
@@ -375,9 +367,7 @@ impl<'a> Into<char> for Edn<'a, kinds::Char> {
         unsafe {
             let mut val = 0u32;
             let ok = c::edn_character_get(self.as_ptr(), &raw mut val);
-            if !ok {
-                panic!("Invariant violated: edn_character_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_character_get failed");
             char::from_u32_unchecked(val)
         }
     }
@@ -449,9 +439,7 @@ impl<'a> Edn<'a, kinds::Keyword> {
                 &raw mut name_ptr,
                 &raw mut name_size,
             );
-            if !ok {
-                panic!("Invariant violated: bad keyword in Edn<Keyword>")
-            }
+            assert!(ok, "Invariant violated: bad keyword in Edn<Keyword>");
             NamespacedStr::from_raw(namespace_ptr, namespace_size, name_ptr, name_size)
         }
     }
@@ -563,9 +551,7 @@ impl<'a> Edn<'a, kinds::Tagged> {
                 &raw mut tag_length,
                 &raw mut value_ptr,
             );
-            if !ok {
-                panic!("Invariant violated: edn_tagged_get failed")
-            }
+            assert!(ok, "Invariant violated: edn_tagged_get failed");
             let tag_slice = std::slice::from_raw_parts(tag_ptr as *const u8, tag_length);
             let tag = str::from_utf8_unchecked(tag_slice);
             let value = Edn::from_raw_unchecked(value_ptr);
@@ -666,9 +652,7 @@ impl<'a> Edn<'a, kinds::Symbol> {
                 &raw mut name_ptr,
                 &raw mut name_size,
             );
-            if !ok {
-                panic!("Invariant violated: bad keyword in Edn<Keyword>")
-            }
+            assert!(ok, "Invariant violated: bad keyword in Edn<Keyword>");
             NamespacedStr::from_raw(namespace_ptr, namespace_size, name_ptr, name_size)
         }
     }
