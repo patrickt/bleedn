@@ -4,9 +4,11 @@
 #![allow(dead_code)]
 
 use std::{
+    borrow::Borrow,
     ffi::{c_char, CStr, CString},
     fmt,
     marker::PhantomData,
+    ops::Deref,
     ptr::{null, null_mut, NonNull},
 };
 
@@ -71,12 +73,15 @@ pub mod c {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
-pub struct Root(NonNull<c::edn_value_t>);
-
-pub struct Edn<'a, T> {
+#[derive(Debug)]
+pub struct Edn<'a, T = ()> {
     inner: NonNull<c::edn_value_t>,
     _phantom: PhantomData<&'a T>,
 }
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct Root(Edn<'static, ()>);
 
 impl<'a, T> Clone for Edn<'a, T> {
     fn clone(&self) -> Self {
@@ -115,7 +120,6 @@ pub struct ParseOptions {
 
 pub struct Arena(NonNull<c::edn_arena_t>);
 
-// TODO: backwards iterator?
 struct EdnIterator<'a, T> {
     value: Edn<'a, T>,
     index: usize,
@@ -127,7 +131,10 @@ impl Root {
         unsafe {
             let c_result = c::edn_read(input.as_ptr(), input.count_bytes());
             if c_result.error == c::edn_error_t::EDN_OK {
-                Ok(Root(NonNull::new_unchecked(c_result.value)))
+                Ok(Root(Edn {
+                    inner: NonNull::new_unchecked(c_result.value),
+                    _phantom: PhantomData,
+                }))
             } else {
                 Err(ParseError {
                     kind: c_result.error.into(),
@@ -150,7 +157,10 @@ impl Root {
             let c_result =
                 c::edn_read_with_options(input.as_ptr(), input.count_bytes(), &raw mut c_options);
             if c_result.error == c::edn_error_t::EDN_OK {
-                Ok(Root(NonNull::new_unchecked(c_result.value)))
+                Ok(Root(Edn {
+                    inner: NonNull::new_unchecked(c_result.value),
+                    _phantom: PhantomData,
+                }))
             } else {
                 Err(ParseError {
                     kind: c_result.error.into(),
@@ -163,51 +173,32 @@ impl Root {
             }
         }
     }
-
-    pub fn any<'a>(&'a self) -> Edn<'a, ()> {
-        Edn::new(self.0)
-    }
-
-    pub fn into_edn<'a, U>(&'a self) -> Option<Edn<'a, U>>
-    where
-        U: kinds::EdnTag,
-    {
-        unsafe {
-            if c::edn_type(self.as_ptr()) == U::tag_of() {
-                Some(Edn {
-                    inner: self.0,
-                    _phantom: PhantomData,
-                })
-            } else {
-                None
-            }
-        }
-    }
-
-    pub fn edn_string<'a>(&'a self) -> Option<Edn<'a, kinds::String>> {
-        self.into_edn()
-    }
-
-    pub fn edn_keyword<'a>(&'a self) -> Option<Edn<'a, kinds::Symbol>> {
-        self.into_edn()
-    }
-
-    pub fn edn_set<'a>(&'a self) -> Option<Edn<'a, kinds::Set>> {
-        self.into_edn()
-    }
-
-    pub fn edn_symbol<'a>(&'a self) -> Option<Edn<'a, kinds::Keyword>> {
-        self.into_edn()
-    }
-
-    fn as_ptr(&self) -> *const c::edn_value_t {
-        self.0.as_ptr()
-    }
 }
 
 impl Drop for Root {
     fn drop(&mut self) {
-        unsafe { c::edn_free(self.0.as_ptr()) }
+        unsafe { c::edn_free(self.0.inner.as_ptr()) }
+    }
+}
+
+impl Deref for Root {
+    type Target = Edn<'static, ()>;
+
+    fn deref(&self) -> &Self::Target {
+        // Safety: Root is repr(transparent) over Edn<'static, ()>
+        &self.0
+    }
+}
+
+impl Borrow<Edn<'static, ()>> for Root {
+    fn borrow(&self) -> &Edn<'static, ()> {
+        self.deref()
+    }
+}
+
+impl AsRef<Edn<'static, ()>> for Root {
+    fn as_ref(&self) -> &Edn<'static, ()> {
+        self.deref()
     }
 }
 
@@ -421,7 +412,8 @@ impl<'a> Edn<'a, kinds::String> {
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
-            let slice = std::slice::from_raw_parts(c_ptr, len);
+            // len is the string length WITHOUT null terminator, so we need len+1 for CStr
+            let slice = std::slice::from_raw_parts(c_ptr, len + 1);
             CStr::from_bytes_with_nul_unchecked(slice)
         }
     }
@@ -441,7 +433,8 @@ impl<'a> Into<&'a str> for Edn<'a, kinds::String> {
             if c_ptr.is_null() {
                 panic!("Invariant violated: NULL string inside an Edn<String>")
             }
-            let slice = std::slice::from_raw_parts(c_ptr, len);
+            // len is the string length WITHOUT null terminator, so we need len+1 for CStr
+            let slice = std::slice::from_raw_parts(c_ptr, len + 1);
             CStr::from_bytes_with_nul_unchecked(slice)
                 .to_str()
                 .expect("Invariant violated: bad UTF-8 in Edn<String>")
@@ -706,15 +699,17 @@ impl<'a> NamespacedStr<'a> {
         unsafe {
             let mut namespace: Option<&'a str> = None;
             if !namespace_ptr.is_null() {
+                // namespace_len doesn't include null terminator, so we need namespace_len+1
                 let namespace_slice =
-                    std::slice::from_raw_parts(namespace_ptr as *const u8, namespace_len);
+                    std::slice::from_raw_parts(namespace_ptr as *const u8, namespace_len + 1);
                 namespace = Some(
                     CStr::from_bytes_with_nul_unchecked(namespace_slice)
                         .to_str()
                         .expect("Invariant violated: bad UTF-8"),
                 );
             }
-            let name_slice = std::slice::from_raw_parts(name_ptr as *const u8, name_len);
+            // name_len doesn't include null terminator, so we need name_len+1
+            let name_slice = std::slice::from_raw_parts(name_ptr as *const u8, name_len + 1);
             let name = CStr::from_bytes_with_nul_unchecked(name_slice)
                 .to_str()
                 .expect("Invariant violated: bad UTF-8");
@@ -764,7 +759,7 @@ impl ParseOptions {
     fn as_raw(&self) -> c::edn_parse_options_t {
         c::edn_parse_options_t {
             reader_registry: self.registry.0.as_ptr(),
-            eof_value: self.eof_value.0.as_ptr(),
+            eof_value: self.eof_value.0.inner.as_ptr(),
             default_reader_mode: self.default_reader_mode.clone().into(),
         }
     }
@@ -810,5 +805,227 @@ impl From<c::edn_error_t> for EdnError {
             EDN_ERROR_DUPLICATE_KEY => EdnError::DuplicateKey,
             EDN_ERROR_DUPLICATE_ELEMENT => EdnError::DuplicateElement,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn test_parse_nil() {
+        let input = CString::new("nil").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+        assert!(root.is_nil());
+    }
+
+    #[test]
+    fn test_parse_string() {
+        let input = CString::new(r#""hello world""#).unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+        assert!(root.is_string());
+
+        let edn_string = root.cast::<kinds::String>().unwrap();
+        assert_eq!(edn_string.as_str(), "hello world");
+    }
+
+    #[test]
+    fn test_parse_integer() {
+        let input = CString::new("42").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+        assert!(root.is_integer());
+
+        let edn_int = root.cast::<kinds::Int64>().unwrap();
+        let val: i64 = edn_int.into();
+        assert_eq!(val, 42);
+    }
+
+    #[test]
+    fn test_parse_float() {
+        let input = CString::new("3.14").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+        assert!(root.is_number());
+
+        assert_eq!(root.as_f64(), Some(3.14));
+    }
+
+    #[test]
+    fn test_parse_boolean() {
+        let input = CString::new("true").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let edn_bool = root.cast::<kinds::Bool>().unwrap();
+        let val: bool = edn_bool.into();
+        assert_eq!(val, true);
+    }
+
+    #[test]
+    fn test_parse_vector() {
+        let input = CString::new("[1 2 3]").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+        assert!(root.is_collection());
+
+        let vec = root.cast::<kinds::Vector>().unwrap();
+        assert_eq!(vec.len(), 3);
+
+        let first = vec.get(0).unwrap();
+        let first_int = first.cast::<kinds::Int64>().unwrap();
+        let val: i64 = first_int.into();
+        assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn test_parse_list() {
+        let input = CString::new("(1 2 3)").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let list = root.cast::<kinds::List>().unwrap();
+        assert_eq!(list.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_map() {
+        let input = CString::new(r#"{:name "Alice" :age 30}"#).unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let map = root.cast::<kinds::Map>().unwrap();
+
+        let name = map.get_by_keyword("name").unwrap();
+        let name_str = name.cast::<kinds::String>().unwrap();
+        assert_eq!(name_str.as_str(), "Alice");
+    }
+
+    #[test]
+    fn test_parse_set() {
+        let input = CString::new("#{1 2 3}").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let set = root.cast::<kinds::Set>().unwrap();
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn test_vector_iterator() {
+        let input = CString::new("[1 2 3 4 5]").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let vec = root.cast::<kinds::Vector>().unwrap();
+        let mut sum = 0i64;
+
+        for item in vec.iter() {
+            if let Some(int_val) = item.cast::<kinds::Int64>() {
+                sum += Into::<i64>::into(int_val);
+            }
+        }
+
+        assert_eq!(sum, 15);
+    }
+
+    #[test]
+    fn test_exact_size_iterator() {
+        let input = CString::new("[1 2 3]").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let vec = root.cast::<kinds::Vector>().unwrap();
+        let iter = vec.iter();
+
+        assert_eq!(iter.len(), 3);
+    }
+
+    #[test]
+    fn test_keyword() {
+        let input = CString::new(":hello").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let keyword = root.cast::<kinds::Keyword>().unwrap();
+        assert_eq!(format!("{}", keyword), ":hello");
+    }
+
+    #[test]
+    fn test_namespaced_keyword() {
+        let input = CString::new(":ns/name").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let keyword = root.cast::<kinds::Keyword>().unwrap();
+        assert_eq!(format!("{}", keyword), ":ns/name");
+    }
+
+    #[test]
+    fn test_parse_error() {
+        let input = CString::new("[1 2").unwrap();
+        let result = Root::parse_cstr(&input);
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind, EdnError::UnexpectedEof);
+    }
+
+    #[test]
+    fn test_deref_coercion() {
+        let input = CString::new(r#""test""#).unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        // Should be able to call Edn methods directly on Root via Deref
+        assert!(root.is_string());
+        let str_val = root.cast::<kinds::String>().unwrap();
+        assert_eq!(str_val.as_str(), "test");
+    }
+
+    #[test]
+    fn test_borrow_trait() {
+        use std::borrow::Borrow;
+
+        let input = CString::new("42").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let borrowed: &Edn<'static, ()> = root.borrow();
+        assert!(borrowed.is_integer());
+    }
+
+    #[test]
+    fn test_as_ref_trait() {
+        let input = CString::new("42").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let referenced: &Edn<'static, ()> = root.as_ref();
+        assert!(referenced.is_integer());
+    }
+
+    #[test]
+    fn test_ratio() {
+        let input = CString::new("22/7").unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let ratio = root.cast::<kinds::Ratio>().unwrap();
+        let (num, denom) = ratio.get();
+        assert_eq!(num, 22);
+        assert_eq!(denom, 7);
+    }
+
+    #[test]
+    fn test_character() {
+        let input = CString::new(r#"\a"#).unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let ch = root.cast::<kinds::Char>().unwrap();
+        let c: char = ch.into();
+        assert_eq!(c, 'a');
+    }
+
+    #[test]
+    fn test_nested_structures() {
+        let input = CString::new(r#"[{:name "Alice"} {:name "Bob"}]"#).unwrap();
+        let root = Root::parse_cstr(&input).unwrap();
+
+        let vec = root.cast::<kinds::Vector>().unwrap();
+        assert_eq!(vec.len(), 2);
+
+        let first = vec.get(0).unwrap();
+        let first_map = first.cast::<kinds::Map>().unwrap();
+
+        let name = first_map.get_by_keyword("name").unwrap();
+        let name_str = name.cast::<kinds::String>().unwrap();
+        assert_eq!(name_str.as_str(), "Alice");
     }
 }
